@@ -1,0 +1,14 @@
+name: Ttest
+
+on: push
+
+jobs:
+  test:
+    name: Build and compare against the original binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - run: make ci
