@@ -5,8 +5,8 @@ clean: zasm-clean
 zasm: zasm-clone zasm-build zasm-test
 
 zasm-clone:
-	git clone git@github.com:begoon/zasm.git 
-	git clone git@github.com:begoon/Libraries.git 
+	git clone https://github.com/begoon/zasm.git
+	git clone https://github.com/begoon/Libraries.git
 
 zasm-build:
 	$(MAKE) -C zasm
