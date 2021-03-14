@@ -1,3 +1,5 @@
+![](https://github.com/begoon/rk86-monitor/actions/workflows/test.yaml/badge.svg)
+
 # Оригинальный Монитор Радио-86РК
 
 Данный проект - это оригинальный Монитор от РК, используемый в эмуляторе
