@@ -2,7 +2,7 @@ all: zasm
 
 clean: zasm-clean
 
-zasm: zasm-clone zasm-build zasm-test
+zasm: zasm-clone zasm-build
 
 zasm-clone:
 	git clone https://github.com/begoon/zasm.git
