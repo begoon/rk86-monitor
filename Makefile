@@ -1,7 +1,11 @@
+ifeq ($(ZASM),)
+ZASM := zasm
+endif
+
 all: build test
 
 build:
-	zasm --asm8080 --opcodes --labels monitor.asm
+	$(ZASM) --asm8080 --opcodes --labels monitor.asm
 
 test:
 	xxd original/mon32.bin >mon32.bin.hex
@@ -9,5 +13,14 @@ test:
 	diff mon32.bin.hex monitor.rom.hex
 
 clean:
+	$(MAKE) -C tools clean
 	-rm -f monitor.rom monitor.rom
 	-rm -f mon32.bin.hex monitor.rom.hex
+
+ci: ci-build-tools ci-test
+
+ci-build-tools:
+	$(MAKE) -C tools
+
+ci-test:
+	$(MAKE) ZASM=tools/zasm/zasm all
