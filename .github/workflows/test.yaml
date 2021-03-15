@@ -11,4 +11,4 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
-      - run: make ci
+      - run: make -f Makefile.asm80
