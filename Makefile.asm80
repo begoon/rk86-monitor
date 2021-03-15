@@ -1,0 +1,20 @@
+ifeq ($(ASM),)
+ASM := yes | npx asm80
+endif
+
+all: build test
+
+build:
+	$(ASM) -m I8080 -t bin monitor.asm -o monitor.64.bin
+	dd bs=1024 skip=62 if=monitor.64.bin of=monitor.bin
+
+test:
+	xxd original/mon32.bin >mon32.bin.hex
+	xxd monitor.bin >monitor.bin.hex
+	diff mon32.bin.hex monitor.bin.hex
+
+clean:
+	$(MAKE) -C tools clean
+	-rm -f mon32.bin.hex
+	-rm -f monitor.bin* monitor.64*
+
