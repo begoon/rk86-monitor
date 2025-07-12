@@ -762,7 +762,7 @@ loc_0_FBDD:                             ;                       |
                 ani     1               ; mask other bits
                 mov     e, a            ; e=d0
                 mov     a, d            ; count=ff ?
-                ora     a               ; we waits for sync-byte ?
+                ora     a               ; we wait for sync-byte ?
                 jp      loc_0_FC0B      ; if not -> goto to count--
                 mov     a, c            ; a=current byte state
                 cpi     0E6h ;          ; a=sync-byte ?

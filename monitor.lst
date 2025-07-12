@@ -769,7 +769,7 @@ FBE9: 0F      	                rrc                     ; d0=bit
 FBEA: E601    	                ani     1               ; mask other bits
 FBEC: 5F      	                mov     e, a            ; e=d0
 FBED: 7A      	                mov     a, d            ; count=ff ?
-FBEE: B7      	                ora     a               ; we waits for sync-byte ?
+FBEE: B7      	                ora     a               ; we waita for sync-byte ?
 FBEF: F20BFC  	                jp      loc_0_FC0B      ; if not -> goto to count--
 FBF2: 79      	                mov     a, c            ; a=current byte state
 FBF3: FEE6    	                cpi     0E6h ;          ; a=sync-byte ?
