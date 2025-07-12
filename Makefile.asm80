@@ -1,5 +1,5 @@
 ifeq ($(ASM),)
-ASM := yes | npx asm80
+ASM := yes | bunx asm80
 endif
 
 all: build test
