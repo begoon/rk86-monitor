@@ -526,13 +526,13 @@ FAB3: C36CF8  	                jmp     prompt_loop
 FAB6:         	entry_inpblock:                         ; CODE XREF: F824j FA91p
 FAB6: 3EFF    	                mvi     a, 0FFh
 FAB8: CDFFFA  	                call    loc_0_FAFF      ; input word to BC with
-              	                                        ; sinc-byte before 1-st byte
+              	                                        ; sync-byte before 1-st byte
               	                                        ; it's addr from tape
 FABB: E5      	                push    h
 FABC: 09      	                dad     b               ; calc start addr:
               	                                        ; HL=tape addr + offset
 FABD: EB      	                xchg                    ; DE=start addr
-FABE: CDFDFA  	                call    loc_0_FAFD      ; input word to BC w/o sinc-byte
+FABE: CDFDFA  	                call    loc_0_FAFD      ; input word to BC w/o sync-byte
               	                                        ; it's end from tape
 FAC1: E1      	                pop     h               ; hl=offset
 FAC2: 09      	                dad     b               ; calc end addr:
@@ -541,7 +541,7 @@ FAC3: EB      	                xchg                    ; hl=start addr, de=and a
 FAC4: E5      	                push    h
 FAC5: CD0AFB  	                call    loc_0_FB0A      ; input block from hl -> de
 FAC8: 3EFF    	                mvi     a, 0FFh         ; input word to bc
-FACA: CDFFFA  	                call    loc_0_FAFF      ; with sinc-byte
+FACA: CDFFFA  	                call    loc_0_FAFF      ; with sync-byte
               	                                        ; it's a chksum from tape
 FACD: E1      	                pop     h               ; hl=addr
               	
@@ -578,7 +578,7 @@ FAFC: C9      	                ret
               	; --------------------------------------------------------------
               	; Input word to BC
               	
-FAFD:         	loc_0_FAFD:                             ; -- w/o sinc-byte
+FAFD:         	loc_0_FAFD:                             ; -- w/o sync-byte
               	
 FAFD: 3E08    	                mvi     a, 8            ; CODE XREF: FABEp
               	
@@ -597,7 +597,7 @@ FB09: C9      	                ret
               	; Input block while de!=hl
 FB0A:         	loc_0_FB0A:                             ; CODE XREF: FAC5p FB13j
 FB0A: 3E08    	                mvi     a, 8
-FB0C: CD98FB  	                call    entry_inpb      ; input byte to a w/o sinc-byte
+FB0C: CD98FB  	                call    entry_inpb      ; input byte to a w/o sync-byte
 FB0F: 77      	                mov     m, a            ; to mem it
 FB10: CD99F9  	                call    cmp_hl_de_loop      ; check hl=de and
               	                                        ; if hl!=de -> hl=hl+1
@@ -658,7 +658,7 @@ FB51: E3      	                xthl                    ; delay 18t
 FB52: E3      	                xthl                    ; delay 18t
 FB53: C24DFB  	                jnz     loc_0_FB4D
 FB56: 0EE6    	                mvi     c, 0E6h
-FB58: CD46FC  	                call    entry_outb      ; out sinc-byte
+FB58: CD46FC  	                call    entry_outb      ; out sync-byte
 FB5B: CD90FB  	                call    loc_0_FB90      ; out hl -- start addr
 FB5E: EB      	                xchg
 FB5F: CD90FB  	                call    loc_0_FB90      ; out de -- end addr
@@ -705,7 +705,7 @@ FB98:         	entry_inpb:
 FB98: E5      	                push    h               ; CODE XREF: FAFFp FB05p FB0Cp
 FB99: C5      	                push    b
 FB9A: D5      	                push    d
-FB9B: 57      	                mov     d, a            ; d = count, 'ff' for sinc-byte
+FB9B: 57      	                mov     d, a            ; d = count, 'ff' for sync-byte
               	
 FB9C:         	loc_0_FB9C:
               	
@@ -769,10 +769,10 @@ FBE9: 0F      	                rrc                     ; d0=bit
 FBEA: E601    	                ani     1               ; mask other bits
 FBEC: 5F      	                mov     e, a            ; e=d0
 FBED: 7A      	                mov     a, d            ; count=ff ?
-FBEE: B7      	                ora     a               ; we waits for sinc-byte ?
+FBEE: B7      	                ora     a               ; we waits for sync-byte ?
 FBEF: F20BFC  	                jp      loc_0_FC0B      ; if not -> goto to count--
 FBF2: 79      	                mov     a, c            ; a=current byte state
-FBF3: FEE6    	                cpi     0E6h ;          ; a=sinc-byte ?
+FBF3: FEE6    	                cpi     0E6h ;          ; a=sync-byte ?
 FBF5: C2FFFB  	                jnz     loc_0_FBFF      ; if not -> goto
 FBF8: AF      	                xra     a
 FBF9: 322E76  	                sta     762Eh           ; [362E]=0
@@ -780,16 +780,16 @@ FBFC: C309FC  	                jmp     loc_0_FC09
               	; --------------------------------------------------------------
               	
 FBFF:         	loc_0_FBFF:
-FBFF: FE19    	                cpi     19h             ; a=!sinc-byte ?
+FBFF: FE19    	                cpi     19h             ; a=!sync-byte ?
 FC01: C2B7FB  	                jnz     loc_0_FBB7      ; if not -> goto
 FC04: 3EFF    	                mvi     a, 0FFh
 FC06: 322E76  	                sta     762Eh           ; [362e]=FF
               	
-FC09:         	loc_0_FC09:                             ; sinc-byte or !sinc-byte inputed
+FC09:         	loc_0_FC09:                             ; sync-byte or !sync-byte inputed
 FC09: 1609    	                mvi     d, 9            ; start to input info byte
               	
 FC0B:         	loc_0_FC0B:
-FC0B: 15      	                dcr     d               ; get another 9 sinc-bytes
+FC0B: 15      	                dcr     d               ; get another 9 sync-bytes
 FC0C: C2B7FB  	                jnz     loc_0_FBB7
               	
 FC0F: 2104E0  	                lxi     h, 0E004h         ; -+ DMA and VG ?!
@@ -820,7 +820,7 @@ FC3B: 7A      	                mov     a, d
 FC3C: B7      	                ora     a               ; timeout in info-byte ?
 FC3D: F2AEFA  	                jp      loc_0_FAAE      ; yes -> warm restart monitor
 FC40: CDA4F9  	                call    loc_0_F9A4      ; test for keypressing
-FC43: C39CFB  	                jmp     loc_0_FB9C      ; repeat input for sinc-byte
+FC43: C39CFB  	                jmp     loc_0_FB9C      ; repeat input for sync-byte
               	                                        ; again
               	; --------------------------------------------------------------
               	; Out byte from c
