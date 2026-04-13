@@ -1,3 +1,5 @@
 *.hex
 monitor.bin
 monitor.64.*
+.claude/settings.local.json
+F800-FFFF.*

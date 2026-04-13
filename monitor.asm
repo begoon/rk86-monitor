@@ -1,1493 +1,1989 @@
-vid_mem          equ 76d0h
-stack            equ 76CFh
+;============================================================================
+; Монитор компьютера Радио-86РК (ПЗУ 2кБ)
+;============================================================================
 
+;----------------------------------------------------------------------------
+; Адреса регистров периферийных БИС
+;----------------------------------------------------------------------------
+
+; ППА К580ВВ55 D20 (клавиатура)
+vv55_port_a      equ 8000h            ; Порт A клавиатуры (шина сканирования)
+vv55_port_b      equ 8001h            ; Порт B клавиатуры (состояние клавиш)
+vv55_port_c      equ 8002h            ; Порт C клавиатуры (вспомогательные клавиши, магнитофон)
+vv55_ctrl        equ 8003h            ; Регистр управляющего слова клавиатуры
+
+; ППА К580ВВ55 D14 (дополнительный, для ROM-диска)
+vv55_d14_port_a  equ 0A000h           ; Порт A D14 (шина данных ROM-диска)
+vv55_d14_port_b  equ 0A001h           ; Порт B D14 (мл. байт адреса ROM-диска)
+vv55_d14_port_c  equ 0A002h           ; Порт C D14 (ст. байт адреса ROM-диска)
+vv55_d14_ctrl    equ 0A003h           ; Регистр управляющего слова D14
+
+; Контроллер ЭЛТ К580ВГ75
+vg75_params      equ 0C000h           ; Регистр параметров
+vg75_cmd_reg     equ 0C001h           ; Регистр команд (запись) / состояния (чтение)
+
+; Контроллер ПДП К580ВТ57
+vt57_ch2_addr    equ 0E004h           ; Регистр адреса канала 2
+vt57_ch2_ctrl    equ 0E005h           ; Регистр управления канала 2
+vt57_mode        equ 0E008h           ; Регистр режима контроллера ПДП
+
+;----------------------------------------------------------------------------
+; Стандартные константы
+;----------------------------------------------------------------------------
+video_mem_size   equ 78*30            ; Количество байт в видео ОЗУ (2340)
+rst_6_addr       equ 30h              ; Адрес перехода по команде RST 6
+sync_byte        equ 0E6h             ; Синхробайт для чтения с магнитофона
+const_read       equ 2Ah              ; Стандартная константа чтения с магнитофона
+const_write      equ 1Dh              ; Стандартная константа записи на магнитофон
+kb_click         equ 5003h            ; Щелчок от нажатия клавиши (B=50h, C=03h)
+beep             equ 5F0h             ; Звуковой сигнал (B=05h, C=F0h)
+first_kb_delay   equ 224              ; Начальная задержка автоповтора клавиатуры
+regular_kb_delay equ 64               ; Стандартная задержка автоповтора клавиатуры
+bounce           equ 21               ; Задержка для устранения дребезга контактов
+
+;----------------------------------------------------------------------------
+; Область переменных Монитора (для ОЗУ 32кБ)
+;----------------------------------------------------------------------------
 monitor_area     equ 7600h
-monitor_area_end equ 765Fh
 
-cursor_addr      equ 7600h
-cursor_xy        equ 7602h
-cursor_seq       equ 7604h
-ruslat_flag      equ 7606h                  ; 0 - lat, ff - rus
-stack_ptr        equ 761Ch
-memlim           equ 7631h
-kbd_buf          equ 7633h
-
-
-                org 0F800h
-
-; --------------------------------------------------------------
-
-start:
-                jmp     entry_start
-; --------------------------------------------------------------
-
-getc:
-                jmp     entry_getc
-; --------------------------------------------------------------
-
-inpb:
-                jmp     entry_inpb
-; --------------------------------------------------------------
-
-putc:
-                jmp     entry_putc
-; --------------------------------------------------------------
-
-outb:
-                jmp     entry_outb
-; --------------------------------------------------------------
-
-temp:
-                jmp     entry_putc
-; --------------------------------------------------------------
-
-kbhit:
-                jmp     entry_kbhit
-; --------------------------------------------------------------
-
-hexb:
-                jmp     entry_hexb
-; --------------------------------------------------------------
-
-puts:
-                jmp     entry_puts
-; --------------------------------------------------------------
-
-scan_kbd:
-                jmp     entry_scan_kbd
-; --------------------------------------------------------------
-
-getxy:
-                jmp     entry_getxy
-; --------------------------------------------------------------
-
-curc:
-                jmp     entry_curc
-; --------------------------------------------------------------
-
-inpblock:
-                jmp     entry_inpblock
-; --------------------------------------------------------------
-
-outblock:
-                jmp     entry_outblock
-; --------------------------------------------------------------
-
-chksum:
-                jmp     entry_chksum
-; --------------------------------------------------------------
-
-video:
-                jmp     entry_video
-; --------------------------------------------------------------
-
-getlim:
-                jmp     entry_getlim
-; --------------------------------------------------------------
-
-setlim:
-                jmp     entry_setlim
-; --------------------------------------------------------------
-
-entry_start:                             ; CODE XREF: F800j
-                mvi     a, 8Ah           ; VV55 A - out, B - in
-                sta     8003h            ; C0-C4 - out, C5-C7 - in
-
-                lxi     sp, stack
-
-                call    entry_video     ; start video
-
-                lxi     h, monitor_area
-                lxi     d, monitor_area_end
-                mvi     c, 0
-                call    fill_hl_de_c    ; fill HL to DE by C
-
-                lxi     h, stack
-                shld    stack_ptr
-
-                lxi     h, RadioPrompt
-                call    entry_puts      ; put title
-
-                call    entry_video
-
-                lxi     h, monitor_area - 1
-                shld    memlim
-
-                lxi     h, 1D2Ah
-                shld    762Fh
-                mvi     a, 0C3h ; '�'   ; JMP instruction
-                sta     7626h
-
-prompt_loop:
-                lxi     sp, stack       ; CODE XREF: F90Bj FAB3j FFC9j FFD0j
-
-                lxi     h, Prompt
-                call    entry_puts
-
-                sta     8002h
-                dcr     a
-                sta     0A002h
-
-                call    loc_0_F8EE
-                lxi     h, prompt_loop
-                push    h
-                lxi     h, kbd_buf
-                mov     a, m
-                cpi     58h ; 'X'
-                jz      print_regs
-                cpi     55h ; 'U'
-                jz      0F000h          ; !?
-                push    psw
-                call    loc_0_F92C
-                lhld    762Bh
-                mov     c, l
-                mov     b, h
-                lhld    7629h
-                xchg
-                lhld    7627h
-                pop     psw
-                cpi     44h ; 'D'
-                jz      loc_0_F9C5
-                cpi     43h ; 'C'
-                jz      loc_0_F9D7
-                cpi     46h ; 'F'
-                jz      fill_hl_de_c
-                cpi     53h ; 'S'
-                jz      loc_0_F9F4
-                cpi     54h ; 'T'
-                jz      loc_0_F9FF
-                cpi     4Dh ; 'M'
-                jz      loc_0_FA26
-                cpi     47h ; 'G'
-                jz      loc_0_FA3F
-                cpi     49h ; 'I'
-                jz      loc_0_FA86
-                cpi     4Fh ; 'O'
-                jz      loc_0_FB2D
-                cpi     4Ch ; 'L'
-                jz      loc_0_FA08
-                cpi     52h ; 'R'
-                jz      loc_0_FA68
-                jmp     0F000h          ; ?!
-; --------------------------------------------------------------
-
-back_kbd_buf:
-                mvi     a, 33h ; '3'    ; CODE XREF: F8F8j F8FDj
-                cmp     l
-                jz      loc_0_F8F1
-                push    h
-                lxi     h, BackClr
-                call    entry_puts
-                pop     h
-                dcx     h
-                jmp     kbd_buf_loop
-; --------------------------------------------------------------
-
-loc_0_F8EE:
-                lxi     h, kbd_buf        ; CODE XREF: F87Cp FA2Dp FFE7p
-
-loc_0_F8F1:
-                mvi     b, 0            ; CODE XREF: F8DFj
-
-kbd_buf_loop:
-                call    entry_getc      ; CODE XREF: F8EBj F917j
-
-                cpi     8               ; backspace ?
-                jz      back_kbd_buf
-                cpi     7Fh             ; backspace ?
-                jz      back_kbd_buf
-
-                cnz     loc_0_FCB9
-                mov     m, a
-                cpi     0Dh
-                jz      loc_0_F91A
-                cpi     2Eh ; '.'
-                jz      prompt_loop
-                mvi     b, 0FFh
-                mvi     a, 52h ; 'R'
-                cmp     l
-                jz      loc_0_FAAE
-                inx     h
-                jmp     kbd_buf_loop
-; --------------------------------------------------------------
-
-loc_0_F91A:
-                mov     a, b            ; CODE XREF: F906j
-                ral
-                lxi     d, kbd_buf
-                mvi     b, 0
-                ret
-; --------------------------------------------------------------
-
-entry_puts:
-                mov     a, m            ; CODE XREF: F818j F855p F872p F8E6p F929j F9B4p FFD6p
-                ana     a
-                rz
-                call    loc_0_FCB9
-                inx     h
-                jmp     entry_puts
-; --------------------------------------------------------------
-
-loc_0_F92C:
-                lxi     h, 7627h        ; CODE XREF: F892p
-                lxi     d, 762Dh
-                mvi     c, 0
-                call    fill_hl_de_c
-                lxi     d, 7634h
-                call    loc_0_F95A
-                shld    7627h
-                shld    7629h
-                rc
-                mvi     a, 0FFh
-                sta     762Dh
-                call    loc_0_F95A
-                shld    7629h
-                rc
-                call    loc_0_F95A
-                shld    762Bh
-                rc
-                jmp     loc_0_FAAE
-; --------------------------------------------------------------
-
-loc_0_F95A:
-                lxi     h, 0            ; CODE XREF: F93Ap F949p F950p FA35p FFEDp
-
-loc_0_F95D:
-                ldax    d               ; CODE XREF: F969j F98Bj
-                inx     d
-                cpi     0Dh
-                jz      loc_0_F98E
-                cpi     2Ch ; ','
-                rz
-                cpi     20h ; ' '
-                jz      loc_0_F95D
-                sui     30h ; '0'
-                jm      loc_0_FAAE
-                cpi     0Ah
-                jm      loc_0_F982
-                cpi     11h
-                jm      loc_0_FAAE
-                cpi     17h
-                jp      loc_0_FAAE
-                sui     7
-
-loc_0_F982:
-                mov     c, a            ; CODE XREF: F973j
-                dad     h
-                dad     h
-                dad     h
-                dad     h
-                jc      loc_0_FAAE
-                dad     b
-                jmp     loc_0_F95D
-; --------------------------------------------------------------
-
-loc_0_F98E:
-                stc                     ; CODE XREF: F961j
-                ret
-; --------------------------------------------------------------
-; cmp hl, de
-; if hl=de -> zf=1, else -> zf=0
-; --------------------------------------------------------------
-cmp_hl_de:
-                mov     a, h            ; CODE XREF: F999p FA3Fp FAA6p FB1Dp FFC6p
-                cmp     d
-                rnz
-                mov     a, l
-                cmp     e
-                ret
-; --------------------------------------------------------------
-
-loc_0_F996:
-                call    loc_0_F9A4      ; CODE XREF: F9CBp F9E7p F9F9p FA1Ap
-
-cmp_hl_de_loop:
-                call    cmp_hl_de      ; CODE XREF: F9EEp FA02p FA75p FB10p FB27p FB8Ap
-                                        ; hl=de ?
-                jnz     loc_0_F9A2      ; if not, then hl=hl+1 and ret
-
-loc_0_F99F:                             ; hl=de, great!
-                inx     sp              ; CODE XREF: FB20j
-                inx     sp              ; pop ret-addr and exit
-                ret
-
-loc_0_F9A2:
-                inx     h               ; CODE XREF: F99Cj
-                ret
-; --------------------------------------------------------------
-; Scan keyboard
-; --------------------------------------------------------------
-loc_0_F9A4:
-                call    entry_scan_kbd      ; CODE XREF: F996p
-                cpi     3
-                rnz
-                call    entry_video
-                jmp     loc_0_FAAE
-; --------------------------------------------------------------
-
-loc_0_F9B0:
-                push    h               ; CODE XREF: FB79p
-                lxi     h, m_FF6C
-                call    entry_puts
-                pop     h
-                ret
-; --------------------------------------------------------------
-
-loc_0_F9B9:
-                mov     a, m            ; CODE XREF: F9C8p F9DFp FA29p
-
-loc_0_F9BA:
-                push    b               ; CODE XREF: F9E3p FB81p
-                call    entry_hexb
-                mvi     a, 20h ; ' '
-                call    loc_0_FCB9
-                pop     b
-                ret
-; --------------------------------------------------------------
-
-loc_0_F9C5:
-                call    loc_0_FB78      ; CODE XREF: F8A4j F9D1j
-
-loc_0_F9C8:
-                call    loc_0_F9B9      ; CODE XREF: F9D4j
-                call    loc_0_F996
-                mov     a, l
-                ani     0Fh
-                jz      loc_0_F9C5
-                jmp     loc_0_F9C8
-; --------------------------------------------------------------
-
-loc_0_F9D7:
-                ldax    b               ; CODE XREF: F8A9j F9EAj
-                cmp     m
-                jz      loc_0_F9E6
-                call    loc_0_FB78
-                call    loc_0_F9B9
-                ldax    b
-                call    loc_0_F9BA
-
-loc_0_F9E6:
-                inx     b               ; CODE XREF: F9D9j
-                call    loc_0_F996
-                jmp     loc_0_F9D7
-; --------------------------------------------------------------
-
-fill_hl_de_c:
-                mov     m, c            ; CODE XREF: F849p F8AEj F934p F9F1j
-                call    cmp_hl_de_loop
-                jmp     fill_hl_de_c
-; --------------------------------------------------------------
-
-loc_0_F9F4:
-                mov     a, c            ; CODE XREF: F8B3j F9FCj
-                cmp     m
-                cz      loc_0_FB78
-                call    loc_0_F996
-                jmp     loc_0_F9F4
-; --------------------------------------------------------------
-
-loc_0_F9FF:
-                mov     a, m            ; CODE XREF: F8B8j FA05j
-                stax    b
-                inx     b
-                call    cmp_hl_de_loop
-                jmp     loc_0_F9FF
-; --------------------------------------------------------------
-
-loc_0_FA08:
-                call    loc_0_FB78      ; CODE XREF: F8D1j FA20j
-
-loc_0_FA0B:
-                mov     a, m            ; CODE XREF: FA23j
-                ora     a
-                jm      loc_0_FA15
-                cpi     20h ; ' '
-                jnc     loc_0_FA17
-
-loc_0_FA15:
-                mvi     a, 2Eh ; '.'    ; CODE XREF: FA0Dj
-
-loc_0_FA17:
-                call    loc_0_FCB9      ; CODE XREF: FA12j
-                call    loc_0_F996
-                mov     a, l
-                ani     0Fh
-                jz      loc_0_FA08
-                jmp     loc_0_FA0B
-; --------------------------------------------------------------
-
-loc_0_FA26:
-                call    loc_0_FB78      ; CODE XREF: F8BDj FA3Cj
-                call    loc_0_F9B9
-                push    h
-                call    loc_0_F8EE
-                pop     h
-                jnc     loc_0_FA3B
-                push    h
-                call    loc_0_F95A
-                mov     a, l
-                pop     h
-                mov     m, a
-
-loc_0_FA3B:
-                inx     h               ; CODE XREF: FA31j
-                jmp     loc_0_FA26
-; --------------------------------------------------------------
-
-loc_0_FA3F:
-                call    cmp_hl_de      ; CODE XREF: F8C2j
-                jz      loc_0_FA5A
-                xchg
-                shld    7623h
-                mov     a, m
-                sta     7625h
-                mvi     m, 0F7h ; '�'
-                mvi     a, 0C3h ; '�'
-                sta     30h
-                lxi     h, loc_0_FFA2
-                shld    31h
-
-loc_0_FA5A:
-                lxi     sp, 7618h       ; CODE XREF: FA42j
-                pop     b
-                pop     d
-                pop     h
-                pop     psw
-                sphl
-                lhld    7616h
-                jmp     7626h
-; --------------------------------------------------------------
-
-loc_0_FA68:
-                mvi     a, 90h          ; CODE XREF: F8D6j
-                sta     0A003h
-
-loc_0_FA6D:
-                shld    0A001h          ; CODE XREF: FA78p
-                lda     0A000h
-                stax    b
-                inx     b
-                call    cmp_hl_de_loop
-                jmp     loc_0_FA6D
-
-entry_getxy:
-                lhld    cursor_xy           ; CODE XREF: F81Ej
-                ret
-; --------------------------------------------------------------
-
-entry_curc:
-                push    h               ; CODE XREF: F821j
-                lhld    cursor_addr
-                mov     a, m
-                pop     h
-                ret
-; --------------------------------------------------------------
-
-loc_0_FA86:
-                lda     762Dh           ; CODE XREF: F8C7j
-                ora     a
-                jz      loc_0_FA91
-                mov     a, e
-                sta     762Fh
-
-loc_0_FA91:
-                call    entry_inpblock      ; CODE XREF: FA8Aj
-                call    loc_0_FB78
-                xchg
-                call    loc_0_FB78
-                xchg
-                push    b
-                call    entry_chksum
-                mov     h, b
-                mov     l, c
-                call    loc_0_FB78
-                pop     d
-                call    cmp_hl_de
-                rz
-                xchg
-                call    loc_0_FB78
-
-loc_0_FAAE:
-                mvi     a, 3Fh ; '?'    ; CODE XREF: F913j F957j F96Ej F978j F97Dj F987j F9ADj FC3Dj
-                call    loc_0_FCB9
-                jmp     prompt_loop
-
-; --------------------------------------------------------------
-; Input from tape : In : HL - offset
-;                   Out: HL - start, DE - end, BC - chksum
-; --------------------------------------------------------------
-entry_inpblock:                         ; CODE XREF: F824j FA91p
-                mvi     a, 0FFh
-                call    loc_0_FAFF      ; input word to BC with
-                                        ; sync-byte before 1-st byte
-                                        ; it's addr from tape
-                push    h
-                dad     b               ; calc start addr:
-                                        ; HL=tape addr + offset
-                xchg                    ; DE=start addr
-                call    loc_0_FAFD      ; input word to BC w/o sync-byte
-                                        ; it's end from tape
-                pop     h               ; hl=offset
-                dad     b               ; calc end addr:
-                                        ; HL=tape addr + offset
-                xchg                    ; hl=start addr, de=and addr
-                push    h
-                call    loc_0_FB0A      ; input block from hl -> de
-                mvi     a, 0FFh         ; input word to bc
-                call    loc_0_FAFF      ; with sync-byte
-                                        ; it's a chksum from tape
-                pop     h               ; hl=addr
-
-entry_video:                            ; -- start video
-                push    h               ; CODE XREF: F82Dj F83Ep F858p F9AAp FB75j FC38p
-                lxi     h, 0C001h
-                mvi     m, 0
-                dcx     h
-                mvi     m, 4Dh
-                mvi     m, 1Dh
-                mvi     m, 99h
-                mvi     m, 93h
-                inx     h
-                mvi     m, 27h
-                mov     a, m
-
-loc_0_FAE1:
-                mov     a, m            ; CODE XREF: FAE4j
-                ani     20h
-                jz      loc_0_FAE1      ; wait for start video
-                lxi     h, 0e008h
-                mvi     m, 80h
-                mvi     l, 4
-                mvi     m, 0D0h
-                mvi     m, 76h
-                inr     l
-                mvi     m, 23h
-                mvi     m, 49h
-                mvi     l, 8
-                mvi     m, 0A4h
-                pop     h
-                ret
-
-; --------------------------------------------------------------
-; Input word to BC
-
-loc_0_FAFD:                             ; -- w/o sync-byte
-
-                mvi     a, 8            ; CODE XREF: FABEp
-
-loc_0_FAFF:
-
-                call    entry_inpb      ; CODE XREF: FAB8p FACAp
-                mov     b, a
-                mvi     a, 8
-
-loc_0_FB05:
-                call    entry_inpb      ; CODE XREF: FB8Dj
-                mov     c, a
-                ret
-
-; --------------------------------------------------------------
-; Input block while de!=hl
-loc_0_FB0A:                             ; CODE XREF: FAC5p FB13j
-                mvi     a, 8
-                call    entry_inpb      ; input byte to a w/o sync-byte
-                mov     m, a            ; to mem it
-                call    cmp_hl_de_loop      ; check hl=de and
-                                        ; if hl!=de -> hl=hl+1
-                                        ; else -> ret to FAC0
-                jmp     loc_0_FB0A      ; while hl!=de
-; --------------------------------------------------------------
-; Calc chksum
-; --------------------------------------------------------------
-entry_chksum:
-                lxi     b, 0            ; CODE XREF: F82Aj FA9Dp FB36p
-
-loc_0_FB19:
-                mov     a, m            ; get byte
-                add     c               ; lo part
-                mov     c, a            ; store
-                push    psw             ; save cf
-                call    cmp_hl_de      ; hl=de
-                jz      loc_0_F99F      ; yes, remove psw and exit
-                pop     psw             ; restore cf
-                mov     a, b            ; hi part
-                adc     m
-                mov     b, a            ; store
-                call    cmp_hl_de_loop      ; while hl!=de -> hl++
-                                        ; otherwise -> exit over stack
-                jmp     loc_0_FB19      ; repeat until de!=hl
-; --------------------------------------------------------------
-; monitor 'O' command
-;
-loc_0_FB2D:
-                mov     a, c            ; CODE XREF: F8CCj
-                ora     a
-                jz      loc_0_FB35
-                sta     7630h
-
-loc_0_FB35:
-                push    h               ; CODE XREF: FB2Fj
-                call    entry_chksum
-                pop     h
-                call    loc_0_FB78
-                xchg
-                call    loc_0_FB78
-                xchg
-                push    h
-                mov     h, b
-                mov     l, c
-                call    loc_0_FB78
-                pop     h
-
-                                        ; -- out block
-entry_outblock:                         ; CODE XREF: F827j
-                push    b               ; save chksum
-                lxi     b, 0
-
-loc_0_FB4D:                             ; make 256 zeros
-                call    entry_outb      ; out 0 byte
-                dcr     b
-                xthl                    ; delay 18t
-                xthl                    ; delay 18t
-                jnz     loc_0_FB4D
-                mvi     c, 0E6h
-                call    entry_outb      ; out sync-byte
-                call    loc_0_FB90      ; out hl -- start addr
-                xchg
-                call    loc_0_FB90      ; out de -- end addr
-                xchg
-                call    loc_0_FB86      ; out block
-                lxi     h, 0
-                call    loc_0_FB90      ; out 0000
-                mvi     c, 0E6h ;
-                call    entry_outb      ; out sync-byte
-                pop     h               ; restore chksum
-                call    loc_0_FB90      ; out chksum
-                jmp     entry_video     ; start video and exit
-; --------------------------------------------------------------
-
-loc_0_FB78:
-                push    b               ; CODE XREF: F9C5p F9DCp F9F6p FA08p FA26p FA94p FA98p FAA2p FAABp FB3Ap FB3Ep FB45p
-                                        ; FFBFp FFE4p
-                call    loc_0_F9B0
-                mov     a, h
-                call    entry_hexb      ; out a in hex
-                mov     a, l
-                call    loc_0_F9BA
-                pop     b
-                ret
-; --------------------------------------------------------------
-
-loc_0_FB86:
-                mov     c, m            ; get current byte
-                call    entry_outb
-                call    cmp_hl_de_loop  ; check hl=de and
-                                        ; if hl!=de -> hl=hl+1
-                                        ; else -> ret to FB66
-                jmp     loc_0_FB86      ; out while hl!=de
-; --------------------------------------------------------------
-; Out hl to tape
-loc_0_FB90:                             ; CODE XREF: FB5Bp FB5Fp FB69p FB72p
-                mov     c, h
-                call    entry_outb      ; out h
-                mov     c, l
-                jmp     entry_outb      ; out l and exit
-; --------------------------------------------------------------
-; Input byte
-entry_inpb:
-                push    h               ; CODE XREF: FAFFp FB05p FB0Cp
-                push    b
-                push    d
-                mov     d, a            ; d = count, 'ff' for sync-byte
-
-loc_0_FB9C:
-
-                mvi     a, 80h ; '�'    ; CODE XREF: FC43j
-                sta     0E008h          ; DMA ?!
-
-                lxi     h, 0
-                dad     sp              ; hl=sp
-                lxi     sp, 0           ; sp=0
-                shld    760Dh           ; save sp
-
-                mvi     c, 0
-                lda     8002h
-                rrc
-                rrc
-                rrc
-                rrc                     ; d0 -- get first state
-                ani     1               ; mask other bits
-                mov     e, a            ; e=d0
-
-loc_0_FBB7:
-                pop     psw             ; delay 11t
-                mov     a, c            ; a = c (current byte)
-                ani     7Fh             ; d7=0
-                rlc                     ; clear d0 in c for next bit
-                mov     c, a            ; c = a
-                mvi     h, 0
-
-loc_0_FBBF:
-                dcr     h
-                jz      loc_0_FC34      ; -- wait for change bit
-                pop     psw             ; delay 11t
-                lda     8002h
-                rrc
-                rrc
-                rrc
-                rrc                     ; d0 bit from tape
-                ani     1               ; mask another bits
-                cmp     e               ; d5 = prev d5 ?
-                jz      loc_0_FBBF      ; wait while '='
-                ora     c               ;
-                mov     c, a            ; c0=bit, current bit
-                dcr     d               ; count--
-                lda     762Fh           ; a=input delay (2ah=42)
-                jnz     loc_0_FBDC      ; if it's last bit ->
-                sui     12h             ; dec delay
-
-loc_0_FBDC:
-                mov     b, a            ; b=input delay ( 5 )  -+ 1097
-                                        ;                       |
-loc_0_FBDD:                             ;                       |
-                pop     psw             ; 11 +                  |
-                dcr     b               ; 5  | 26*42=1092      -+
-                jnz     loc_0_FBDD      ; 10 +
-                inr     d               ; count++, restore
-                lda     8002h
-                rrc
-                rrc
-                rrc
-                rrc                     ; d0=bit
-                ani     1               ; mask other bits
-                mov     e, a            ; e=d0
-                mov     a, d            ; count=ff ?
-                ora     a               ; we wait for sync-byte ?
-                jp      loc_0_FC0B      ; if not -> goto to count--
-                mov     a, c            ; a=current byte state
-                cpi     0E6h ;          ; a=sync-byte ?
-                jnz     loc_0_FBFF      ; if not -> goto
-                xra     a
-                sta     762Eh           ; [362E]=0
-                jmp     loc_0_FC09
-; --------------------------------------------------------------
-
-loc_0_FBFF:
-                cpi     19h             ; a=!sync-byte ?
-                jnz     loc_0_FBB7      ; if not -> goto
-                mvi     a, 0FFh
-                sta     762Eh           ; [362e]=FF
-
-loc_0_FC09:                             ; sync-byte or !sync-byte inputed
-                mvi     d, 9            ; start to input info byte
-
-loc_0_FC0B:
-                dcr     d               ; get another 9 sync-bytes
-                jnz     loc_0_FBB7
-
-                lxi     h, 0E004h         ; -+ DMA and VG ?!
-                mvi     m, 0D0h           ;  |
-                mvi     m, 76h            ;  |
-                inx     h                 ;  |
-                mvi     m, 23h            ;  |
-                mvi     m, 49h            ;  |
-                mvi     a, 27h            ;  |
-                sta     0C001h            ;  |
-                mvi     a, 0E0h           ;  |
-                sta     0C001h            ;  |
-                mvi     l, 8              ;  |
-                mvi     m, 0A4h           ;  |
-                lhld    760Dh             ;  |
-                sphl                      ; -+
-
-                lda     762Eh              ;
-                xra     c
-                jmp     loc_0_FCA1         ; exit
-; --------------------------------------------------------------
-
-loc_0_FC34:                             ; time-out!
-                lhld    760Dh
-                sphl                    ; restore stack
-                call    entry_video     ; start video
-                mov     a, d
-                ora     a               ; timeout in info-byte ?
-                jp      loc_0_FAAE      ; yes -> warm restart monitor
-                call    loc_0_F9A4      ; test for keypressing
-                jmp     loc_0_FB9C      ; repeat input for sync-byte
-                                        ; again
-; --------------------------------------------------------------
-; Out byte from c
-;
-entry_outb:
-                push    h               ; CODE XREF: F80Cj FB4Dp FB58p FB6Ep FB87p FB91p FB95j
-                push    b
-                push    d
-                push    psw
-                mvi     a, 80h ; '�'
-                sta     0E008h
-                lxi     h, 0
-                dad     sp
-                lxi     sp, 0
-                mvi     d, 8
-
-loc_0_FC58:
-                pop     psw             ; CODE XREF: FC82j
-                mov     a, c
-                rlc
-                mov     c, a
-                mvi     a, 1
-                xra     c
-                sta     8002h
-                lda     7630h
-                mov     b, a
-
-loc_0_FC66:
-                pop     psw             ; CODE XREF: FC68j
-                dcr     b
-                jnz     loc_0_FC66
-                mvi     a, 0
-                xra     c
-                sta     8002h
-                dcr     d
-                lda     7630h
-                jnz     loc_0_FC7A
-                sui     0Eh
-
-loc_0_FC7A:
-                mov     b, a
-
-loc_0_FC7B:
-                pop     psw
-                dcr     b
-                jnz     loc_0_FC7B
-                inr     d
-                dcr     d
-                jnz     loc_0_FC58
-                sphl
-                lxi     h, 0E004h
-                mvi     m, 0D0h
-                mvi     m, 76h
-                inx     h
-                mvi     m, 23h
-                mvi     m, 49h
-                mvi     a, 27h
-                sta     0C001h
-                mvi     a, 0E0h
-                sta     0C001h
-                mvi     l, 8
-                mvi     m, 0A4h
-                pop     psw
-
-loc_0_FCA1:
-                pop     d               ; CODE XREF: FC31j
-                pop     b
-                pop     h
-                ret
-; --------------------------------------------------------------
-
-entry_hexb:
-                push    psw             ; CODE XREF: F815j F9BBp FB7Dp
-                rrc
-                rrc
-                rrc
-                rrc
-                call    hexb_tetr
-                pop     psw
-
-hexb_tetr:
-                ani     0Fh             ; CODE XREF: FCAAp
-                cpi     0Ah
-                jm      hexb_make_sym
-                adi     7
-
-hexb_make_sym:
-                adi     30h ; '0'       ; CODE XREF: FCB2j
-
-loc_0_FCB9:
-                mov     c, a            ; CODE XREF: F900p F925p F9C0p FA17p FAB0p
-
-entry_putc:
-                push    psw             ; CODE XREF: F809j F80Fj
-                push    b
-                push    d
-                push    h
-                call    entry_kbhit      ; kbhit ?
-                lxi     h, loc_0_FD85
-                push    h
-                lhld    cursor_xy
-                xchg                    ; de=cursor pos
-                lhld    cursor_addr           ; hl=cursor addr
-                lda     cursor_seq
-                dcr     a
-                jm      loc_0_FCEE
-                jz      loc_0_FD65
-                jpo     loc_0_FD73
-                mov     a, c
-                sui     20h ; ' '
-                mov     c, a
-
-loc_0_FCDD:
-                dcr     c               ; CODE XREF: FCE6j
-                jm      loc_0_FCE9      ;
-                push    b
-                call    loc_0_FDB9
-                pop     b
-                jmp     loc_0_FCDD
-; --------------------------------------------------------------
-
-loc_0_FCE9:
-                xra     a               ; CODE XREF: FCDEj FD68j
-
-loc_0_FCEA:
-                sta     cursor_seq           ; CODE XREF: FD70j FD7Aj FDA0j
-                ret
-; --------------------------------------------------------------
-
-loc_0_FCEE:
-                mov     a, c
-                ani     7Fh
-                mov     c, a
-                cpi     1Fh
-                jz      loc_0_FDA3
-                cpi     0Ch
-                jz      loc_0_FDB2
-                cpi     0Dh
-
-locret_0_FCFE:
-                jz      loc_0_FDF3      ; CODE XREF: FCD0j
-                cpi     0Ah
-
-locret_0_FD03:
-                jz      loc_0_FD47      ; CODE XREF: FD7Ep
-                cpi     8
-                jz      loc_0_FDD6
-                cpi     18h
-                jz      loc_0_FDB9
-                cpi     19h
-                jz      loc_0_FDE2
-                cpi     1Ah
-                jz      loc_0_FDC5
-                cpi     1Bh
-                jz      loc_0_FD9E
-                cpi     7
-                jnz     loc_0_FD38
-                lxi     b, 5F0h
-
-loc_0_FD27:
-                mov     a, b            ; CODE XREF: FD34j FE3Ap
-
-loc_0_FD28:
-                ei                      ; CODE XREF: FD2Aj
-                dcr     a
-                jnz     loc_0_FD28
-                mov     a, b
-
-loc_0_FD2E:
-                di                      ; CODE XREF: FD30j
-                dcr     a
-                jnz     loc_0_FD2E
-                dcr     c
-                jnz     loc_0_FD27
-                ret
-; --------------------------------------------------------------
-
-loc_0_FD38:
-                mov     m, c            ; CODE XREF: FD21j
-                call    loc_0_FDB9
-                mov     a, d
-                cpi     3
-                rnz
-                mov     a, e
-                cpi     8
-                rnz
-                call    loc_0_FDE2
-
-loc_0_FD47:
-                mov     a, d            ; CODE XREF: FD03j
-                cpi     1Bh
-                jnz     loc_0_FDC5
-                push    h
-                push    d
-                lxi     h, 77C2h
-                lxi     d, 7810h
-                lxi     b, 79Eh
-
-loc_0_FD58:
-                ldax    d               ; CODE XREF: FD5Fj
-                mov     m, a
-                inx     h
-                inx     d
-                dcx     b
-                mov     a, c
-                ora     b
-                jnz     loc_0_FD58
-                pop     d
-                pop     h
-                ret
-; --------------------------------------------------------------
-
-loc_0_FD65:
-                mov     a, c            ; CODE XREF: FCD3j
-                cpi     59h ; 'Y'
-                jnz     loc_0_FCE9
-                call    loc_0_FDB2
-                mvi     a, 2
-                jmp     loc_0_FCEA
-; --------------------------------------------------------------
-
-loc_0_FD73:
-                mov     a, c            ; CODE XREF: FCD6j
-                sui     20h ; ' '
-                mov     c, a
-
-loc_0_FD77:
-                dcr     c               ; CODE XREF: FD82j
-                mvi     a, 4
-                jm      loc_0_FCEA
-                push    b
-                call    loc_0_FDC5
-                pop     b
-                jmp     loc_0_FD77
-; --------------------------------------------------------------
-
-loc_0_FD85:
-                shld    cursor_addr
-                xchg
-                shld    cursor_xy
-                mvi     a, 80h ; '�'
-                sta     0C001h
-                mov     a, l
-                sta     0C000h
-                mov     a, h
-
-loc_0_FD96:
-                sta     0C000h          ; CODE XREF: F806j
-                pop     h
-                pop     d
-                pop     b
-                pop     psw
-                ret
-; --------------------------------------------------------------
-
-loc_0_FD9E:
-                mvi     a, 1            ; CODE XREF: FD1Cj
-                jmp     loc_0_FCEA
-; --------------------------------------------------------------
-
-loc_0_FDA3:
-                lxi     h, 7FF4h        ; CODE XREF: FCF4j
-                lxi     d, 925h
-
-loc_0_FDA9:
-                xra     a               ; CODE XREF: FDAFj
-                mov     m, a
-                dcx     h
-                dcx     d
-                mov     a, e
-                ora     d
-                jnz     loc_0_FDA9
-
-loc_0_FDB2:
-                lxi     d, 308h         ; CODE XREF: FCF9j FD6Bp
-                lxi     h, 77C2h
-                ret
-; --------------------------------------------------------------
-
-loc_0_FDB9:
-                mov     a, e            ; CODE XREF: FCE2p FD0Dj FD39p
-                inx     h
-                inr     e
-                cpi     47h ; 'G'
-                rnz
-                mvi     e, 8
-                lxi     b, 0FFC0h
-                dad     b
-
-loc_0_FDC5:
-                mov     a, d            ; CODE XREF: FD17j FD4Aj
-                cpi     1Bh
-                lxi     b, 4Eh ; 'N'
-                jnz     loc_0_FDD3
-                mvi     d, 2
-                lxi     b, 0F8B0h
-
-loc_0_FDD3:
-                inr     d               ; CODE XREF: FDCBj
-                dad     b
-                ret
-; --------------------------------------------------------------
-
-loc_0_FDD6:
-                mov     a, e            ; CODE XREF: FD08j
-                dcx     h
-                dcr     e
-                cpi     8
-                rnz
-                mvi     e, 47h ; 'G'
-                lxi     b, 40h ; '@'
-                dad     b
-
-loc_0_FDE2:
-                mov     a, d            ; CODE XREF: FD12j FD44p
-                cpi     3
-                lxi     b, 0FFB2h
-                jnz     loc_0_FDF0
-                mvi     d, 1Ch
-                lxi     b, 750h
-
-loc_0_FDF0:
-                dcr     d               ; CODE XREF: FDE8j
-                dad     b
-                ret
-; --------------------------------------------------------------
-
-loc_0_FDF3:
-                mov     a, l            ; CODE XREF: FCFEj
-                sub     e
-                jnc     loc_0_FDF9
-                dcr     h
-
-loc_0_FDF9:
-                mov     l, a            ; CODE XREF: FDF5j
-                mvi     e, 8
-                lxi     b, 8
-                dad     b
-                ret
-; --------------------------------------------------------------
-
-entry_kbhit:
-                lda     8002h           ; CODE XREF: F812j FCBEp FE63p
-                ani     80h
-                jz      loc_0_FE0E      ; Repeat now ?
-                lda     7605h           ; Get last key
-                ora     a               ; Check for 0 now
-                rnz
-
-loc_0_FE0E:
-                push    h               ; CODE XREF: FE06j
-                lhld    7609h
-                call    entry_scan_kbd      ; Scan -- FF - not
-                                            ;         FE - rus/lat
-                                            ;         xx - key
-                cmp     l
-                mov     l, a
-                jz      loc_0_FE2A
-
-loc_0_FE1A:
-                mvi     a, 1            ; CODE XREF: FE60j
-                sta     760Bh
-                mvi     h, 15h
-
-loc_0_FE21:
-                xra     a               ; CODE XREF: FE2Bj
-
-loc_0_FE22:
-                shld    7609h           ; CODE XREF: FE2Fj FE4Ej
-                pop     h
-                sta     7605h
-                ret
-; --------------------------------------------------------------
-
-loc_0_FE2A:
-                dcr     h               ; CODE XREF: FE17j
-                jnz     loc_0_FE21
-                inr     a
-                jz      loc_0_FE22
-                inr     a
-                jz      loc_0_FE51
-                push    b
-                lxi     b, 5003h
-                call    loc_0_FD27
-                pop     b
-                lda     760Bh
-                mvi     h, 0E0h
-                dcr     a
-                sta     760Bh
-                jz      loc_0_FE4C
-                mvi     h, 40h
-
-loc_0_FE4C:
-                mvi     a, 0FFh         ; CODE XREF: FE47j
-                jmp     loc_0_FE22
-; --------------------------------------------------------------
-
-loc_0_FE51:
-                lda     8002h           ; CODE XREF: FE33j FE56j
-                ani     80h
-                jz      loc_0_FE51
-                lda     ruslat_flag
-                cma
-                sta     ruslat_flag
-                jmp     loc_0_FE1A
-; --------------------------------------------------------------
-
-entry_getc:
-                call    entry_kbhit      ; CODE XREF: F803j FE67j
-                ora     a
-                jz      entry_getc
-                xra     a
-                sta     7605h
-                lda     7609h
-                ret
-; --------------------------------------------------------------
-
-entry_scan_kbd:
-                lda     8002h           ; CODE XREF: F81Bj F9A4p FE12p
-                ani     80h             ; rus/lat ?
-                jnz     loc_0_FE7D
-                mvi     a, 0FEh         ; yes
-                ret
-; --------------------------------------------------------------
-
-loc_0_FE7D:
-                xra     a               ; CODE XREF: FE77j
-                sta     8000h
-                sta     8002h
-                lda     ruslat_flag
-                ani     1
-                ori     6
-                sta     8003h
-                lda     8001h
-                inr     a
-                jnz     loc_0_FE97
-                dcr     a
-                ret
-; --------------------------------------------------------------
-
-loc_0_FE97:
-                push    h               ; CODE XREF: FE92j
-                mvi     l, 1            ; flying '1'
-                mvi     h, 7            ; testing of 8 lines
-                                        ; from 8 to 1
-
-loc_0_FE9C:
-                mov     a, l            ; CODE XREF: FEACj
-                rrc
-                mov     l, a
-                cma
-                sta     8000h
-                lda     8001h
-                cma
-                ora     a
-                jnz     loc_0_FEB3
-                dcr     h
-                jp      loc_0_FE9C
-
-loc_0_FEAF:
-                mvi     a, 0FFh         ; CODE XREF: FEBAj
-                pop     h
-                ret
-; --------------------------------------------------------------
-
-loc_0_FEB3:
-                mvi     l, 20h ; ' '    ; CODE XREF: FEA8j
-
-loc_0_FEB5:
-                lda     8001h           ; CODE XREF: FEBEj
-                cma
-                ora     a
-                jz      loc_0_FEAF
-                dcr     l
-                jnz     loc_0_FEB5
-                mvi     l, 8
-
-loc_0_FEC3:
-                dcr     l               ; CODE XREF: FEC5j
-                rlc
-                jnc     loc_0_FEC3
-                mov     a, h
-                mov     h, l
-                mov     l, a
-                cpi     1
-                jz      loc_0_FEFA
-                jc      loc_0_FEF3
-                rlc
-                rlc
-                rlc
-                adi     20h ; ' '
-                ora     h
-                cpi     5Fh ; '_'
-                jnz     loc_0_FF06
-                mvi     a, 20h ; ' '
-                pop     h
-                ret
-; --------------------------------------------------------------
-unk_0_FEE2:     db    9 ;
-                db 0Ah, 0Dh, 7Fh, 8, 19h, 18h, 1Ah
-byte_0_FEEA:    db 0Ch, 1Fh, 1Bh
-                db 0, 1, 2, 3, 4, 5
-; --------------------------------------------------------------
-
-loc_0_FEF3:
-                mov     a, h            ; CODE XREF: FED0j
-                lxi     h, byte_0_FEEA
-                jmp     loc_0_FEFE
-; --------------------------------------------------------------
-
-loc_0_FEFA:
-                mov     a, h            ; CODE XREF: FECDj
-                lxi     h, unk_0_FEE2
-
-loc_0_FEFE:
-                add     l               ; CODE XREF: FEF7j
-                mov     l, a
-                mov     a, m
-                cpi     40h ; '@'
-                pop     h
-                rc
-                push    h
-
-loc_0_FF06:
-                mov     l, a            ; CODE XREF: FEDBj
-                lda     8002h
-                mov     h, a
-                ani     40h
-                jnz     loc_0_FF1A
-                mov     a, l
-                cpi     40h ; '@'
-                jm      loc_0_FF3F
-                ani     1Fh
-                pop     h
-                ret
-; --------------------------------------------------------------
-
-loc_0_FF1A:
-                lda     ruslat_flag           ; CODE XREF: FF0Dj
-                ora     a
-                jz      loc_0_FF2A
-                mov     a, l
-                cpi     40h ; '@'
-                jm      loc_0_FF2A
-                ori     20h
-                mov     l, a
-
-loc_0_FF2A:
-                mov     a, h            ; CODE XREF: FF1Ej FF24j
-                ani     20h
-                jnz     loc_0_FF3F
-                mov     a, l
-                cpi     40h ; '@'
-                jm      loc_0_FF3B
-                mov     a, l
-                xri     20h
-                pop     h
-                ret
-; --------------------------------------------------------------
-
-loc_0_FF3B:
-                mov     a, l            ; CODE XREF: FF33j
-                ani     2Fh
-                mov     l, a
-
-loc_0_FF3F:
-                mov     a, l            ; CODE XREF: FF13j FF2Dj
-                cpi     40h ; '@'
-                pop     h
-                rp
-                push    h
-                mov     l, a
-                ani     0Fh
-                cpi     0Ch
-                mov     a, l
-                jm      loc_0_FF50
-                xri     10h
-
-loc_0_FF50:
-                pop     h               ; CODE XREF: FF4Bj
-                ret
-; --------------------------------------------------------------
-
-entry_getlim:
-                lhld    memlim           ; CODE XREF: F830j
-                ret
-; --------------------------------------------------------------
-
-entry_setlim:
-                shld    memlim           ; CODE XREF: F833j
-                ret
-; --------------------------------------------------------------
-RadioPrompt:    db  1Fh ;
-m_Radio86rk:    db "radio-86rk"      ; CODE XREF: F8F3p
-                db 0
-Prompt:         dw 0A0Dh
-m_FF68:         db "-->"
-                db 0
-m_FF6C:         dw 0A0Dh
-                db 18h, 18h, 18h, 18h, 0   ; -> -> -> ->
-Regs:           dw 0A0Dh
-m_Pc:           db " PC-"
-                dw 0A0Dh
-m_Hl:           db " HL-"
-                dw 0A0Dh
-m_Bc:           db " BC-"
-                dw 0A0Dh
-m_De:           db " DE-"
-                dw 0A0Dh
-m_Sp:           db " SP-"
-                dw 0A0Dh
-m_Af:           db " AF-"
-                db 19h, 19h, 19h, 19h, 19h, 19h, 0
-BackClr:        db 8, 20h, 8, 0
-; --------------------------------------------------------------
-
-loc_0_FFA2:
-                shld    7616h
-                push    psw
-                pop     h
-                shld    761Eh
-                pop     h
-                dcx     h
-                shld    7614h
-                lxi     h, 0
-                dad     sp
-                lxi     sp, 761Eh
-                push    h
-                push    d
-                push    b
-                lhld    7614h
-                lxi     sp, stack
-                call    loc_0_FB78
-                xchg
-                lhld    7623h
-                call    cmp_hl_de
-                jnz     prompt_loop
-                lda     7625h
-                mov     m, a
-                jmp     prompt_loop
-; --------------------------------------------------------------
-
-print_regs:
-                lxi     h, Regs         ; CODE XREF: F889j
-                call    entry_puts
-                lxi     h, 7614h
-                mvi     b, 6
-
-loc_0_FFDE:
-                mov     e, m            ; CODE XREF: FFFAj
-                inx     h
-                mov     d, m
-                push    b
-                push    h
-                xchg
-                call    loc_0_FB78
-                call    loc_0_F8EE
-                jnc     loc_0_FFF6
-                call    loc_0_F95A
-                pop     d
-                push    d
-                xchg
-                mov     m, d
-                dcx     h
-                mov     m, e
-
-loc_0_FFF6:
-                pop     h               ; CODE XREF: FFEAj
-                pop     b
-                dcr     b
-                inx     h
-                jnz     loc_0_FFDE
-                ret
-; --------------------------------------------------------------
-                dw 0FFFFh              ; junk
-
-                end
+memory_top       equ monitor_area-1    ; 75FFh - Верхняя граница свободной памяти
+cursor_addr      equ monitor_area+0    ; 7600h - Адрес знакоместа курсора в видео ОЗУ
+cursor_xy        equ monitor_area+2    ; 7602h - Координаты курсора (ст. - Y, мл. - X)
+ap2_seq          equ monitor_area+4    ; 7604h - Номер байта в АР2-последовательности
+pressed_key      equ monitor_area+5    ; 7605h - FF - клавиша нажата, 0 - не нажата
+ruslat_flag      equ monitor_area+6    ; 7606h - Флаг РУС/ЛАТ: 0 - лат, FF - рус
+keyboard_repeat  equ monitor_area+9    ; 7609h - Мл. байт - код клавиши, ст. - счетчик автоповтора
+released         equ monitor_area+0Bh  ; 760Bh - Признак, что клавиша была отпущена
+temp_sp          equ monitor_area+0Dh  ; 760Dh - Временное хранение указателя стека
+pc_storage       equ monitor_area+14h  ; 7614h - Хранение адреса останова (PC)
+hl_storage       equ monitor_area+16h  ; 7616h - Хранение HL
+bc_storage       equ monitor_area+18h  ; 7618h - Хранение BC
+de_storage       equ monitor_area+1Ah  ; 761Ah - Хранение DE
+sp_storage       equ monitor_area+1Ch  ; 761Ch - Хранение SP
+af_storage       equ monitor_area+1Eh  ; 761Eh - Хранение A и PSW
+stop_addr        equ monitor_area+23h  ; 7623h - Адрес останова отлаживаемой программы
+stop_addr_value  equ monitor_area+25h  ; 7625h - Байт по адресу останова (сохраненный)
+jump_to_go       equ monitor_area+26h  ; 7626h - Команда JMP (0C3h) для директивы G
+cmd_parameter_1  equ monitor_area+27h  ; 7627h - Первый параметр команды
+cmd_parameter_2  equ monitor_area+29h  ; 7629h - Второй параметр команды
+cmd_parameter_3  equ monitor_area+2Bh  ; 762Bh - Третий параметр команды
+param_2_present  equ monitor_area+2Dh  ; 762Dh - Второй параметр присутствует = FF
+tape_polarity    equ monitor_area+2Eh  ; 762Eh - Полярность входных данных с магнитофона
+tape_read_const  equ monitor_area+2Fh  ; 762Fh - Константа чтения с магнитофона
+tape_write_const equ monitor_area+30h  ; 7630h - Константа записи на магнитофон
+memory_limit     equ monitor_area+31h  ; 7631h - Верхний адрес свободной памяти
+kbd_buf          equ monitor_area+33h  ; 7633h - Буфер клавиатуры (32 байта)
+monitor_area_end equ monitor_area+5Fh  ; 765Fh - Конец области переменных
+stack_bottom     equ monitor_area+0CFh ; 76CFh - Дно стека
+video_memory     equ monitor_area+0D0h ; 76D0h - Начало видеопамяти
+video_memory_end equ video_memory+video_mem_size ; 7FF4h - Конец видеопамяти
+
+; Этот адрес используется как обращение к расширению ПЗУ Монитора,
+; которое так и не было реализовано. Из-за упрощенного декодирования
+; адресов ПЗУ в реальном Радио-86РК с ПЗУ 2кБ переход происходит
+; на "холодный" старт Монитора (start).
+; Расширять ПЗУ можно вниз, вплоть до адреса 0E000h (8кБ)
+; без каких-либо схемотехнических изменений.
+ext_f000         equ 0F000h
+
+;============================================================================
+                 org 0F800h
+;============================================================================
+
+;----------------------------------------------------------------------------
+; "Холодный" старт программы Монитор (F800h)
+;----------------------------------------------------------------------------
+start:                                   ; F800
+                 jmp     entry_start
+
+;----------------------------------------------------------------------------
+; Таблица стандартных подпрограмм Монитора
+;----------------------------------------------------------------------------
+getc:            jmp     entry_getc      ; F803 - ввод символа с клавиатуры
+inpb:            jmp     entry_inpb      ; F806 - ввод байта с магнитофона
+putc:            jmp     entry_putc      ; F809 - вывод символа на экран
+outb:            jmp     entry_outb      ; F80C - вывод байта на магнитофон
+temp:            jmp     entry_putc      ; F80F - резерв (дублирует putc)
+kbhit:           jmp     entry_kbhit     ; F812 - опрос состояния клавиатуры
+hexb:            jmp     entry_hexb      ; F815 - вывод байта в hex на экран
+puts:            jmp     entry_puts      ; F818 - вывод строки на экран
+scan_kbd:        jmp     entry_scan_kbd  ; F81B - сканирование клавиатуры
+getxy:           jmp     entry_getxy     ; F81E - получить координаты курсора
+curc:            jmp     entry_curc      ; F821 - получить символ под курсором
+inpblock:        jmp     entry_inpblock  ; F824 - ввод блока с магнитофона
+outblock:        jmp     entry_outblock  ; F827 - вывод блока на магнитофон
+chksum:          jmp     entry_chksum    ; F82A - подсчет контрольной суммы
+video:           jmp     entry_video     ; F82D - настройка видеоконтроллера
+getlim:          jmp     entry_getlim    ; F830 - получить границу памяти
+setlim:          jmp     entry_setlim    ; F833 - установить границу памяти
+
+;============================================================================
+; Инициализация компьютера (Холодный старт)
+;============================================================================
+entry_start:                             ; F836
+; Настройка ППА клавиатуры D20: порт A - вывод, порт B - ввод,
+; C0-C4 - вывод, C5-C7 - ввод
+                 mvi     a, 8Ah
+                 sta     vv55_ctrl
+
+; Настраиваем указатель стека
+                 lxi     sp, stack_bottom
+
+; Настраиваем отображение видеопамяти на экране.
+; Это нужно делать в первую очередь, чтобы начать регенерацию ОЗУ
+; после сброса.
+                 call    entry_video
+
+; Обнуляем массив служебных ячеек Монитора
+                 lxi     h, monitor_area
+                 lxi     d, monitor_area_end
+                 mvi     c, 0
+                 call    cmd_f   ; заполнить 'c' от hl до de 
+
+                 lxi     h, stack_bottom
+                 shld    sp_storage
+
+; Выводим на экран начальное сообщение "РАДИО-86РК"
+                 lxi     h, radio_prompt
+                 call    entry_puts
+
+; Повторно настраиваем видеоконтроллер
+                 call    entry_video
+
+; Устанавливаем верхнюю границу свободной памяти
+                 lxi     h, memory_top
+                 shld    memory_limit
+
+; Устанавливаем константы по умолчанию для чтения и записи на магнитофон
+; (L=2Ah - чтение, H=1Dh - запись, SHLD сохраняет L первым)
+                 lxi     h, const_write * 256 + const_read
+                 shld    tape_read_const
+
+; Установка кода команды JMP для директивы G
+                 mvi     a, 0C3h
+                 sta     jump_to_go
+
+;============================================================================
+; Выход на промт (Горячий старт)
+;============================================================================
+prompt_loop:                             ; F86C
+                 lxi     sp, stack_bottom
+
+                 lxi     h, prompt
+                 call    entry_puts
+
+; После выхода из entry_puts в A всегда 0
+                 sta     vv55_port_c      ; Все 0 в порт C клавиатуры
+                 dcr     a                ; A = FFh
+                 sta     vv55_d14_port_c  ; Все 1 в порт C дополнительного ППА
+
+;============================================================================
+; Консольный процессор Монитора - ввод и выполнение команд
+;============================================================================
+                 call    input_string
+                 lxi     h, prompt_loop
+                 push    h               ; Адрес возврата в стеке
+                 lxi     h, kbd_buf
+                 mov     a, m            ; Первый символ команды
+
+; Команды без параметров
+                 cpi     'X'             ; Просмотр/изменение регистров
+                 jz      print_regs
+                 cpi     'U'             ; Резервная команда -> расширение ПЗУ
+                 jz      ext_f000
+
+; Получаем 3 параметра команды: 1 -> HL, 2 -> DE, 3 -> BC
+                 push    psw
+                 call    parse_param
+                 lhld    cmd_parameter_3
+                 mov     c, l
+                 mov     b, h
+                 lhld    cmd_parameter_2
+                 xchg
+                 lhld    cmd_parameter_1
+                 pop     psw
+
+; Команды с параметрами
+                 cpi     'D'             ; dump - дамп памяти
+                 jz      cmd_d
+                 cpi     'C'             ; compare - сравнение областей памяти
+                 jz      cmd_c
+                 cpi     'F'             ; fill - заполнение области памяти
+                 jz      cmd_f
+                 cpi     'S'             ; search - поиск байта в памяти
+                 jz      cmd_s
+                 cpi     'T'             ; transfer - пересылка области памяти
+                 jz      cmd_t
+                 cpi     'M'             ; modify - изменение содержимого памяти
+                 jz      cmd_m
+                 cpi     'G'             ; go - запуск программы
+                 jz      cmd_g
+                 cpi     'I'             ; input - загрузка с магнитофона
+                 jz      cmd_i
+                 cpi     'O'             ; output - запись на магнитофон
+                 jz      cmd_o
+                 cpi     'L'             ; literal - дамп в символьном виде
+                 jz      cmd_l
+                 cpi     'R'             ; read - загрузка из ROM-диска
+                 jz      cmd_r
+
+; Нераспознанная команда -> переход на расширение ПЗУ
+                 jmp     ext_f000
+
+;----------------------------------------------------------------------------
+; Удаление предыдущего символа в буфере ввода
+;----------------------------------------------------------------------------
+back_kbd_buf:                            ; F8DC
+                 mvi     a, kbd_buf & 0FFh
+                 cmp     l               ; Если это первый символ,
+                 jz      input_next      ; то ничего не делать
+                 push    h
+                 lxi     h, back_clear   ; Затереть предыдущий символ на экране
+                 call    entry_puts
+                 pop     h
+                 dcx     h
+                 jmp     kbd_buf_loop
+
+;----------------------------------------------------------------------------
+; Ввод строки с клавиатуры.
+; Вводим максимум 31 символ в буфер клавиатуры.
+; Особо обрабатываемые клавиши:
+;   [<-] и [ЗБ] - удаление последнего символа
+;   [.]         - выход на промт
+;   [ВК]        - успешный возврат из п/п
+;----------------------------------------------------------------------------
+input_string:                            ; F8EE
+                 lxi     h, kbd_buf
+
+input_next:                              ; F8F1
+                 mvi     b, 0            ; Признак: ничего не введено
+
+kbd_buf_loop:                            ; F8F3
+                 call    entry_getc
+
+                 cpi     8               ; Клавиша [<-]?
+                 jz      back_kbd_buf
+                 cpi     7Fh             ; Клавиша [ЗБ]?
+                 jz      back_kbd_buf
+                 cnz     putc_from_a     ; Вывести символ на экран
+                 mov     m, a            ; Сохранить в буфере
+                 cpi     0Dh             ; Клавиша [ВК]?
+                 jz      input_string_end
+                 cpi     '.'             ; Точка -> выход на промт
+                 jz      prompt_loop
+                 mvi     b, 0FFh         ; Признак: что-то введено
+                 mvi     a, (kbd_buf+1Fh) & 0FFh
+                 cmp     l               ; Буфер полон?
+                 jz      print_error     ; Если полон, то ошибка (?)
+                 inx     h
+                 jmp     kbd_buf_loop
+
+input_string_end:                        ; F91A
+                 mov     a, b            ; Флаг: CF=1 если что-то введено
+                 ral
+                 lxi     d, kbd_buf
+                 mvi     b, 0
+                 ret
+
+;----------------------------------------------------------------------------
+; Вывод строки на экран.
+; Указатель на начало строки в HL. Строка завершается нулевым байтом.
+;----------------------------------------------------------------------------
+entry_puts:                              ; F922
+                 mov     a, m
+                 ana     a               ; Нулевой байт?
+                 rz                      ; Если да, то выход
+                 call    putc_from_a
+                 inx     h
+                 jmp     entry_puts
+
+;----------------------------------------------------------------------------
+; Анализ параметров команд Монитора.
+; Разбирает до 3 параметров, разделенных запятыми.
+;----------------------------------------------------------------------------
+parse_param:                                    ; F92C
+                 lxi     h, cmd_parameter_1     ; Обнуляем область параметров
+                 lxi     d, cmd_parameter_1+2*3
+                 mvi     c, 0
+                 call    cmd_f
+                 lxi     d, kbd_buf+1           ; Указатель на второй символ
+                 call    parse_hex              ; Получаем первый параметр
+                 shld    cmd_parameter_1
+                 shld    cmd_parameter_2        ; По умолчанию = первому
+                 rc                             ; Если больше ничего, выходим
+
+; Признак наличия второго параметра (так как он может быть равен 0)
+; Здесь вводится признак наличия второго параметра.
+; Поскольку невведенные параметры у нас = 0, то признак указывает,
+; что второй параметр введен и возможно равен нулю					
+                 mvi     a, 0FFh
+                 sta     param_2_present
+                 call    parse_hex
+                 shld    cmd_parameter_2
+                 rc
+
+                 call    parse_hex
+                 shld    cmd_parameter_3
+                 rc
+
+                 jmp     print_error       ; Лишние параметры -> ошибка
+
+;----------------------------------------------------------------------------
+; Обработка строки с hex-числом (параметром), на которую указывает DE.
+; Результат в HL. CF=1 если параметра не было (встретился ВК).
+;----------------------------------------------------------------------------
+parse_hex:                               ; F95A
+                 lxi     h, 0
+
+parse_hex_loop:                          ; F95D
+                 ldax    d
+                 inx     d
+                 cpi     0Dh             ; [ВК] - конец строки
+                 jz      parse_hex_end
+                 cpi     ','             ; Запятая - разделитель параметров
+                 rz
+                 cpi     ' '             ; Пробелы игнорируются
+                 jz      parse_hex_loop
+                 sui     '0'             ; Получаем цифру из кода символа
+                 jm      print_error     ; Код < 30h -> ошибка
+                 cpi     0Ah             ; Цифра 0-9?
+                 jm      parse_hex_char
+                 cpi     11h             ; Код < 41h (A) -> ошибка
+                 jm      print_error
+                 cpi     17h             ; Код > 46h (F) -> ошибка
+                 jp      print_error
+                 sui     7               ; Корректировка для цифр A-F
+
+; Добавляем очередную hex-цифру в число
+parse_hex_char:                          ; F982
+                 mov     c, a
+                 dad     h               ; Число * 16
+                 dad     h
+                 dad     h
+                 dad     h
+                 jc      print_error     ; Переполнение -> ошибка
+                 dad     b               ; Прибавляем очередную цифру
+                 jmp     parse_hex_loop
+
+; Выход с признаком CF=1 (параметра не было)
+parse_hex_end:                           ; F98E
+                 stc
+                 ret
+
+;----------------------------------------------------------------------------
+; Сравнение регистровых пар HL и DE.
+; Если равны, устанавливается флаг Z.
+;----------------------------------------------------------------------------
+cmp_hl_de:                               ; F990
+                 mov     a, h
+                 cmp     d
+                 rnz
+                 mov     a, l
+                 cmp     e
+                 ret
+
+;----------------------------------------------------------------------------
+; Проверка на окончание адреса + сканирование на нажатие [F4].
+;----------------------------------------------------------------------------
+end_of_addr_or_f4:                       ; F996
+                 call    check_press_f4
+
+;----------------------------------------------------------------------------
+; Инкремент текущего адреса с проверкой на конец.
+; Сравнивает HL с DE. Если равны - удаляет адрес возврата и выходит
+; к предыдущему вызывающему. Если не равны - инкремент HL.
+;----------------------------------------------------------------------------
+cmp_hl_de_loop:                          ; F999
+                 call    cmp_hl_de
+                 jnz     cmp_hl_de_end
+
+cmp_hl_de_ret:                           ; F99F
+                 inx     sp              ; Удаляем текущий адрес возврата
+                 inx     sp
+                 ret
+
+cmp_hl_de_end:                           ; F9A2
+                 inx     h
+                 ret
+
+;----------------------------------------------------------------------------
+; Проверка на нажатие клавиши [F4] (код 3) для прерывания команды.
+; Клавиша [РУС/ЛАТ] приостанавливает вывод на экран (удержание).
+; [F4] -> выход на промт со знаком вопроса.
+; Подпрограмма применяется для выхода из затянувшейся по времени команды.
+; Так же можно использовать для приостановки вывода на экран удержание
+; клавиши [РУС/ЛАТ], поскольку она срабатывает при отпускании.
+; Если клавиша [F4] не нажата, происходит просто выход из подпрограммы.
+; Если нажата, то выход на промт с выдачей знака вопроса.
+;----------------------------------------------------------------------------
+check_press_f4:                          ; F9A4
+                 call    entry_scan_kbd
+                 cpi     3               ; Код клавиши [F4]
+                 rnz
+                 call    entry_video     ; Восстанавливаем видео
+                 jmp     print_error
+
+;----------------------------------------------------------------------------
+; Переход на новую строку с отступом в 4 символа для вывода адреса.
+;----------------------------------------------------------------------------
+print_next_line_prefix:                  ; F9B0
+                 push    h
+                 lxi     h, next_line_prefix
+                 call    entry_puts
+                 pop     h
+                 ret
+
+;----------------------------------------------------------------------------
+; Вывод байта [HL] на экран в hex + пробел
+;----------------------------------------------------------------------------
+print_hex_mem_and_space:                  ; F9B9
+                 mov     a, m
+
+; Вывод байта из A на экран в hex + пробел
+print_hex_byte_and_space:                 ; F9BA
+                 push    b
+                 call    entry_hexb
+                 mvi     a, ' '
+                 call    putc_from_a
+                 pop     b
+                 ret
+
+;============================================================================
+; Команда D (Dump). Вывод дампа памяти в hex.
+; По 16 байт в строке. В начале строки - адрес первой ячейки.
+; Адрес строки округляется до 0 в младшей hex-цифре.
+;============================================================================
+cmd_d:                                   ; F9C5
+                 call    print_addr_from_hl
+
+cmd_d_loop:                              ; F9C8
+                 call    print_hex_mem_and_space
+                 call    end_of_addr_or_f4
+                 mov     a, l
+                 ani     0Fh             ; Граница 16 байт?
+                 jz      cmd_d           ; Да -> новая строка с адресом
+                 jmp     cmd_d_loop
+
+;============================================================================
+; Команда C (Compare). Сравнение двух областей памяти.
+; Сравнивает [HL] с [BC], выводит только различающиеся байты.
+; В строке: адрес, значение из первой области, значение из второй.
+;============================================================================
+cmd_c:                                   ; F9D7
+                 ldax    b
+                 cmp     m
+                 jz      cmd_c_equal     ; Байты равны - пропускаем
+                 call    print_addr_from_hl
+                 call    print_hex_mem_and_space
+                 ldax    b
+                 call    print_hex_byte_and_space
+
+cmd_c_equal:                         ; F9E6
+                 inx     b
+                 call    end_of_addr_or_f4
+                 jmp     cmd_c
+
+;============================================================================
+; Команда F (Fill). Заполнение области памяти.
+; Заполняет память от HL до DE байтом из C (третий параметр).
+;============================================================================
+cmd_f:                           ; F9ED
+                 mov     m, c
+                 call    cmp_hl_de_loop
+                 jmp     cmd_f
+
+;============================================================================
+; Команда S (Search). Поиск байта в памяти.
+; Ищет байт из C в области от HL до DE.
+; Выводит адреса найденных совпадений.
+;============================================================================
+cmd_s:                           ; F9F4
+                 mov     a, c
+                 cmp     m
+                 cz      print_addr_from_hl
+                 call    end_of_addr_or_f4
+                 jmp     cmd_s
+
+;============================================================================
+; Команда T (Transfer). Пересылка области памяти.
+; Пересылает байты из [HL..DE] в область, начиная с [BC].
+;============================================================================
+cmd_t:                                   ; F9FF
+                 mov     a, m
+                 stax    b
+                 inx     b
+                 call    cmp_hl_de_loop
+                 jmp     cmd_t
+
+;============================================================================
+; Команда L (Literal). Вывод содержимого памяти в символьном виде.
+; По 16 символов в строке. Непечатные символы заменяются точками.
+;============================================================================
+cmd_l:                                   ; FA08
+                 call    print_addr_from_hl
+
+cmd_l_loop:                              ; FA0B
+                 mov     a, m
+                 ora     a               ; Код > 7Fh?
+                 jm      cmd_l_period    ; Да -> точка
+                 cpi     ' '             ; Код < 20h (управляющий)?
+                 jnc     cmd_l_char      ; Нет -> выводим как есть
+
+cmd_l_period:                            ; FA15
+                 mvi     a, '.'
+
+cmd_l_char:                              ; FA17
+                 call    putc_from_a
+                 call    end_of_addr_or_f4
+                 mov     a, l
+                 ani     0Fh
+                 jz      cmd_l
+                 jmp     cmd_l_loop
+
+;============================================================================
+; Команда M (Modify). Изменение содержимого памяти.
+; Выводит адрес и содержимое ячейки, ожидает ввод нового значения.
+; [ВК] - перейти к следующей, [.] - выход из команды.
+;============================================================================
+cmd_m:                                    ; FA26
+                 call    print_addr_from_hl
+                 call    print_hex_mem_and_space
+                 push    h
+                 call    input_string
+                 pop     h
+                 jnc     cmd_m_next       ; Ничего не введено -> следующий адрес
+
+                 push    h
+                 call    parse_hex        ; Получаем новое значение в HL
+                 mov     a, l
+                 pop     h
+                 mov     m, a             ; Записываем в память
+
+cmd_m_next:                               ; FA3B
+                 inx     h
+                 jmp     cmd_m
+
+;============================================================================
+; Команда G (Go). Запуск программы.
+; 1-й параметр: адрес старта.
+; 2-й параметр (необязательный): адрес останова.
+; Если адрес останова указан, по нему записывается RST 6 (F7h),
+; а по адресу 0030h - JMP return_address. После останова регистры
+; сохраняются в служебных ячейках (доступны по команде X).
+;============================================================================
+cmd_g:                                   ; FA3F
+                 call    cmp_hl_de       ; Указан ли адрес останова?
+                 jz      cmd_g_run       ; Нет -> сразу запуск
+
+; Настройка механизма останова через адрес 0030h
+                 xchg
+                 shld    stop_addr       ; Сохраняем адрес останова
+                 mov     a, m
+                 sta     stop_addr_value ; Сохраняем байт по этому адресу
+                 mvi     m, 0F7h         ; RST 6 по адресу останова
+                 mvi     a, 0C3h         ; Команда JMP
+                 sta     rst_6_addr      ; по адресу 0030h
+                 lxi     h, return_address
+                 shld    rst_6_addr+1    ; Адрес возврата
+
+; Загрузка регистров из служебных ячеек и запуск программы
+cmd_g_run:                               ; FA5A
+                 lxi     sp, bc_storage
+                 pop     b
+                 pop     d
+                 pop     h
+                 pop     psw
+                 sphl                    ; Загружаем SP
+                 lhld    hl_storage
+                 jmp     jump_to_go      ; JMP на адрес старта
+
+;============================================================================
+; Команда R (Read). Загрузка из ROM-диска (ПЗУ через доп. ППА D14).
+; Шина данных -> порт A, шина адреса -> порты B и C.
+; 1-й параметр: начальный адрес в ОЗУ, 2-й: конечный, 3-й: адрес в ПЗУ.
+;============================================================================
+cmd_r:                           ; FA68
+                 mvi     a, 90h          ; Порт A - ввод, B и C - вывод
+                 sta     vv55_d14_ctrl
+
+cmd_r_loop:                              ; FA6D
+                 shld    vv55_d14_port_b ; Адрес в ПЗУ (мл. в B, ст. в C)
+                 lda     vv55_d14_port_a ; Читаем байт
+                 stax    b               ; Сохраняем в ОЗУ
+                 inx     b               ; Перейти к след. адресу ОЗУ
+                 call    cmp_hl_de_loop  ; Проверка на конец
+                 jmp     cmd_r_loop
+
+;----------------------------------------------------------------------------
+; Получить координаты курсора в HL (H=Y, L=X)
+;----------------------------------------------------------------------------
+entry_getxy:                             ; FA7B
+                 lhld    cursor_xy
+                 ret
+
+;----------------------------------------------------------------------------
+; Получить символ с экрана по адресу курсора в A
+;----------------------------------------------------------------------------
+entry_curc:                              ; FA7F
+                 push    h
+                 lhld    cursor_addr
+                 mov     a, m
+                 pop     h
+                 ret
+
+;============================================================================
+; Команда I (Input). Загрузка блока данных с магнитофона.
+; 1-й параметр: смещение относительно адреса на ленте.
+; 2-й параметр (необязательный): новая константа чтения.
+;============================================================================
+cmd_i:                                    ; FA86
+                 lda     param_2_present
+                 ora     a
+                 jz      cmd_i_cr
+                 mov     a, e
+                 sta     tape_read_const  ; Новая константа чтения
+
+cmd_i_cr:                                   ; FA91
+                 call    entry_inpblock     ; Читаем блок с магнитофона
+                 call    print_addr_from_hl ; Выводим адрес начала
+                 xchg
+                 call    print_addr_from_hl ; Выводим адрес конца
+                 xchg
+                 push    b
+                 call    entry_chksum       ; Считаем контрольную сумму
+                 mov     h, b
+                 mov     l, c
+                 call    print_addr_from_hl ; Выводим вычисленную КС
+                 pop     d                  ; Считанная КС
+                 call    cmp_hl_de          ; Совпадают?
+                 rz                         ; Да -> выход
+                 xchg
+                 call    print_addr_from_hl ; Нет -> выводим считанную КС
+
+;----------------------------------------------------------------------------
+; Выход из команды с ошибкой - знак вопроса и возврат на промт
+;----------------------------------------------------------------------------
+print_error:                             ; FAAE
+                 mvi     a, '?'
+                 call    putc_from_a
+                 jmp     prompt_loop
+
+;============================================================================
+; Ввод блока данных с магнитофона.
+;   Вход:  HL - смещение
+;   Выход: HL - адрес начала, DE - адрес конца, BC - контрольная сумма
+; Структура блока на ленте:
+;   раккорд, синхробайт, начальный адрес, конечный адрес, данные,
+;   раккорд, синхробайт, контрольная сумма
+;============================================================================
+entry_inpblock:                          ; FAB6
+                 mvi     a, 0FFh         ; Признак поиска синхробайта
+                 call    input_bc        ; Вводим начальный адрес в BC
+                 push    h
+                 dad     b               ; Начальный адрес = адрес с ленты + смещение
+                 xchg                    ; DE = начальный адрес
+                 call    input_bc_no_sync ; Вводим конечный адрес в BC
+                 pop     h
+                 dad     b               ; Конечный адрес = адрес с ленты + смещение
+                 xchg                    ; HL = начальный, DE = конечный
+                 push    h
+                 call    read_block      ; Вводим массив данных
+                 mvi     a, 0FFh
+                 call    input_bc        ; Вводим контрольную сумму в BC
+                 pop     h
+
+;============================================================================
+; Настройка отображения на экране (видеоконтроллер ВГ75 + ПДП ВТ57)
+;============================================================================
+entry_video:                             ; FACE
+                 push    h
+
+; Настраиваем контроллер ЭЛТ ВГ75
+                 lxi     h, vg75_cmd_reg
+                 mvi     m, 0            ; Команда Reset
+                 dcx     h               ; Передаем параметры:
+                 mvi     m, 4Dh          ; 78-1 = 77 символов в строке
+                 mvi     m, 1Dh          ; 30-1 = 29 знакорядов в кадре
+                 mvi     m, 99h          ; Высота символа 10 строк, подчеркивание на 10-й
+                                         ; (10-1) << 4 | 9
+; Задаем режим отображения: 0 - без сдига номеров строк
+; Атрибуты поля: не прозрачные
+; Тип курсора: мигающее подчеркивание
+; Количество символов в строчном синхроимпульсе: 8 интервалов (6 мкс) 
+                 mvi     m, 93h          ; Режим: мигающее подчеркивание, 8 интервалов
+                                         ; (1 << 7) | (1 << 4) | ((8/2)-1)
+                 inx     h
+; Команда "начать отображение":
+; интервал между запросами ПДП: 7 символов, 8 байт в пакете
+                 mvi     m, 27h          ; (1 << 5) | (((7+1)/8) << 2) | 3
+                 mov     a, m            ; Чтение статуса
+
+; Ожидаем начало кадра (бит IR в статусном регистре ВГ75)
+; Бит IR статусного регистра устанавливается после начала последнего знакоряда в кадре.
+; Как раз в это время и нужно загружать данные первого знакоряда на экране.
+wait_frame_start:                        ; FAE1
+                 mov     a, m
+                 ani     20h             ; Флаг IR
+                 jz      wait_frame_start
+
+; Настраиваем канал 2 ПДП ВТ57 для пересылки видеоданных
+; Режим: чтение ОЗУ с автозагрузкой (регистры канала 3)
+; Для пересылки используется канал 2 в режиме чтения ОЗУ с автозагрузкой.
+; Для автозагрузки используются регистры канала 3. 					
+; После пересылки последнего байта экрана начальные данные ПДП (начальный
+; адрес и количество байт пересылки) снова автоматически загружаются в регистры
+; 2 канала и пересылка продолжается постоянно.
+                 lxi     h, vt57_mode
+                 mvi     m, 80h                  ; Остановить ПДП, включить автозагрузку
+; Адрес начала пересылки: начало видео ОЗУ
+                 mvi     l, vt57_ch2_addr & 0FFh ; 4
+                 mvi     m, video_memory & 0FFh  ; 0Dh
+                 mvi     m, video_memory / 256   ; 76h
+; Количество байт пересылки и режим (запись в ОЗУ)
+                 inr     l
+                 mvi     m, (video_mem_size-1) & 0FFh        ; 23h
+                 mvi     m, 40h | ((video_mem_size-1) / 256) ; 49h
+; Запускаем ПДП: автозагрузка, удлиненная запись, канал 2.
+                 mvi     l, vt57_mode & 0FFh                 ; 8
+                 mvi     m, 0A4h
+
+                 pop     h
+                 ret
+
+;----------------------------------------------------------------------------
+; Ввод 16-битного слова в BC с магнитофона (без синхробайта)
+;----------------------------------------------------------------------------
+input_bc_no_sync:                        ; FAFD
+                 mvi     a, 8            ; 8 бит, без поиска синхробайта
+
+; Ввод 16-битного слова в BC с магнитофона (с синхробайтом если A=FFh)
+input_bc:                                ; FAFF
+                 call    entry_inpb      ; Читаем старший байт
+                 mov     b, a
+                 mvi     a, 8
+                 call    entry_inpb      ; Читаем младший байт
+                 mov     c, a
+                 ret
+
+;----------------------------------------------------------------------------
+; Чтение массива данных с магнитофона.
+; HL - начальный адрес, DE - конечный адрес.
+;----------------------------------------------------------------------------
+read_block:                              ; FB0A
+                 mvi     a, 8            ; Без поиска синхробайта
+                 call    entry_inpb
+                 mov     m, a            ; Сохраняем в память
+                 call    cmp_hl_de_loop
+                 jmp     read_block
+
+;============================================================================
+; Подсчет контрольной суммы.
+;   Вход:  HL - начальный адрес, DE - конечный адрес.
+;   Выход: BC - контрольная сумма.
+; Алгоритм:
+;   Младший байт (C): сумма всех байтов без учета переноса.
+;   Старший байт (B): сумма всех байтов (кроме последнего) + переносы из C.
+;============================================================================
+entry_chksum:                            ; FB16
+                 lxi     b, 0
+
+checksum_loop:                           ; FB19
+; Обработка младшего байта
+                 mov     a, m
+                 add     c
+                 mov     c, a
+                 push    psw             ; Сохраняем признак переноса
+                 call    cmp_hl_de
+                 jz      cmp_hl_de_ret   ; Последний байт -> дост аем PSW и выходим
+                 pop     psw
+; Обработка старшего байта
+                 mov     a, b
+                 adc     m               ; Суммируем + перенос из младшего
+                 mov     b, a
+                 call    cmp_hl_de_loop
+                 jmp     checksum_loop
+
+;============================================================================
+; Команда O (Output). Запись блока памяти на магнитную ленту.
+; 1-й параметр: начальный адрес, 2-й: конечный.
+; 3-й (необязательный): новая константа записи.
+;============================================================================
+cmd_o:                           ; FB2D
+                 mov     a, c
+                 ora     a
+                 jz      cmd_o_no_change
+                 sta     tape_write_const   ; Новая константа записи
+
+cmd_o_no_change:                            ; FB35
+                 push    h
+                 call    entry_chksum       ; Вычисляем контрольную сумму
+                 pop     h
+                 call    print_addr_from_hl ; Выводим начальный адрес
+                 xchg
+                 call    print_addr_from_hl ; Выводим конечный адрес
+                 xchg
+                 push    h
+                 mov     h, b
+                 mov     l, c
+                 call    print_addr_from_hl ; Выводим контрольную сумму
+                 pop     h
+
+;============================================================================
+; Вывод блока данных на магнитную ленту.
+;   Вход: HL - начальный адрес, DE - конечный адрес, BC - контрольная сумма.
+; Структура блока:
+;   256 байт раккорда (00), синхробайт, нач.адрес, кон.адрес,
+;   данные, 2 байта раккорда (00), синхробайт, контрольная сумма
+;============================================================================
+entry_outblock:                           ; FB49
+                 push    b                ; Сохраняем контрольную сумму
+                 lxi     b, 0
+
+; Вывод раккорда (256 нулевых байт)
+zero_block_loop:                          ; FB4D
+                 call    entry_outb
+                 dcr     b                ; Счетчик 256 байт
+                 xthl                     ; Задержка 18 тактов
+                 xthl                     ; Задержка 18 тактов
+                 jnz     zero_block_loop
+
+                 mvi     c, sync_byte     ; Синхробайт
+                 call    entry_outb
+                 call    out_addr_from_hl ; Начальный адрес
+                 xchg
+                 call    out_addr_from_hl ; Конечный адрес
+                 xchg
+                 call    out_block_loop   ; Массив данных
+                 lxi     h, 0
+                 call    out_addr_from_hl ; 2 байта раккорда (0000)
+                 mvi     c, sync_byte
+                 call    entry_outb       ; Синхробайт
+                 pop     h                ; Контрольная сумма
+                 call    out_addr_from_hl ; Выводим КС
+                 jmp     entry_video      ; Восстанавливаем видео и выходим
+
+;----------------------------------------------------------------------------
+; Вывод адреса с новой строки (с отступом). Адрес в HL.
+;----------------------------------------------------------------------------
+print_addr_from_hl:                       ; FB78
+                 push    b
+                 call    print_next_line_prefix
+                 mov     a, h
+                 call    entry_hexb      ; Старший байт
+                 mov     a, l
+                 call    print_hex_byte_and_space ; Младший байт и ' '
+                 pop     b
+                 ret
+
+;----------------------------------------------------------------------------
+; Вывод массива байт на магнитофон. HL - начало, DE - конец.
+;----------------------------------------------------------------------------
+out_block_loop:                          ; FB86
+                 mov     c, m
+                 call    entry_outb
+                 call    cmp_hl_de_loop
+                 jmp     out_block_loop
+
+;----------------------------------------------------------------------------
+; Вывод 16-разрядного слова из HL на магнитофон (старший байт первым).
+;----------------------------------------------------------------------------
+out_addr_from_hl:                        ; FB90
+                 mov     c, h
+                 call    entry_outb      ; Старший байт
+                 mov     c, l
+                 jmp     entry_outb      ; Младший байт и выход
+
+;============================================================================
+; Ввод байта данных с магнитофона.
+;   Вход:  A = 8          - без поиска синхробайта (8 бит)
+;          A = 80h..FFh   - с поиском синхробайта
+;   Выход: A - введенный байт
+; Если ввод был с поиском синхробайта, то выдается байт, следующий
+; непосредственно за синхробайтом.
+; Обработка последнего бита укорачивается на 450 тактов, чтобы
+; предоставить время на обработку введенного байта.
+;============================================================================
+entry_inpb:                              ; FB98
+                 push    h
+                 push    b
+                 push    d
+                 mov     d, a            ; D = признак синхробайта / счетчик бит
+
+; Отслеживаем изменение уровня на входе магнитофона.
+; SP используется нетрадиционно - для регенерации ОЗУ через POP PSW.
+; Его содержимое записывается в служебной ячейке, а в SP записывается 0000h.
+; Далее мы периодически выполняя инструкцию POP PSW, выполняем регенерацию ОЗУ. 
+seek_change:                             ; FB9C
+                 mvi     a, 80h
+                 sta     vt57_mode       ; Останавливаем отображение на экране
+
+                 lxi     h, 0
+                 dad     sp              ; Сохраняем SP
+                 lxi     sp, 0           ; SP = 0 для регенерации ОЗУ
+                 shld    temp_sp
+
+                 mvi     c, 0            ; Заготовка под вводимый байт
+                 lda     vv55_port_c     ; Читаем состояние входа магнитофона
+                 rrc
+                 rrc
+                 rrc
+                 rrc                     ; Сдвигаем бит C4 -> d0
+                 ani     1
+                 mov     e, a            ; E = текущий уровень сигнала
+
+; Обработка очередного бита
+next_bit:                                ; FBB7
+                 pop     psw             ; Регенерация ОЗУ
+                 mov     a, c            ; Сдвигаем заготовку байта
+                 ani     7Fh             ; влево на 1 бит,
+                 rlc                     ; очищая d0
+                 mov     c, a
+                 mvi     h, 0            ; Счетчик попыток чтения
+
+; Цикл ожидания изменения уровня на входе C4 (вход с магнитофона)
+change_loop:                             ; FBBF
+                 dcr     h
+                 jz      input_timeout   ; Тайм-аут -> обработка
+                 pop     psw             ; Регенерация ОЗУ
+                 lda     vv55_port_c
+                 rrc
+                 rrc
+                 rrc
+                 rrc                     ; Бит C4 -> d0
+                 ani     1
+                 cmp     e               ; Уровень изменился?
+                 jz      change_loop     ; Нет -> ждем
+
+                 ora     c               ; Да -> помещаем бит в заготовку
+                 mov     c, a
+                 dcr     d               ; Счетчик бит--
+                 lda     tape_read_const ; Константа чтения (2Ah = 42)
+                 jnz     normal_delay    ; Не последний бит -> полная задержка
+                 sui     12h             ; Последний бит -> укороченная задержка
+
+; Цикл задержки чтения
+; Один проход: POP(10) + DCR(5) + JNZ(10) = 25 тактов
+; При f=16МГц: T_такта = 0.56мкс, T_цикла = 14мкс
+; Для const_read=2Ah(42): задержка = 42*14мкс = 591мкс ~ 0.6мс
+; Для последнего бита: (2Ah-12h)*14мкс = 336мкс
+normal_delay:                            ; FBDC
+                 mov     b, a            ; значение задержки (5) ------+ 1055 (T)
+read_delay_loop:                         ; FBDD                        |
+                 pop     psw             ; (10) +   Регенерация ОЗУ    |
+                 dcr     b               ; (5)  | 25*42 = 1050  -------+
+                 jnz     read_delay_loop ; (10) +
+
+                 inr     d               ; Восстанавливаем счетчик бит
+                 lda     vv55_port_c     ; Читаем текущий уровень
+                 rrc
+                 rrc
+                 rrc
+                 rrc
+                 ani     1
+                 mov     e, a            ; Сохраняем уровень
+                 mov     a, d
+                 ora     a               ; Ждем синхробайт?
+                 jp      check_bit_count ; Нет -> считаем биты
+
+; Проверка на синхробайт
+                 mov     a, c
+                 cpi     sync_byte       ; Синхробайт (E6h)?
+                 jnz     invert_polarity ; Нет -> проверим инверсию
+                 xra     a
+                 sta     tape_polarity   ; Полярность = прямая
+                 jmp     set_bit_count
+
+invert_polarity:                         ; FBFF
+                 cpi     19h             ; Инверсный синхробайт (19h)?
+                 jnz     next_bit        ; Нет -> продолжаем искать
+                 mvi     a, 0FFh
+                 sta     tape_polarity   ; Полярность = инверсная
+
+; После получения синхробайта вводим байт данных
+set_bit_count:                           ; FC09
+                 mvi     d, 9            ; 8 бит + 1 (декремент перед проверкой)
+
+check_bit_count:                         ; FC0B
+                 dcr     d               ; Подсчет бит
+                 jnz     next_bit        ; Не последний -> продолжаем ввод
+
+; Ввод байта закончен. Восстанавливаем отображение на экране.
+; Настраиваем канал 2 ПДП для видео
+                 lxi     h, vt57_ch2_addr
+                 mvi     m, video_memory & 0FFh
+                 mvi     m, video_memory / 256
+                 inx     h
+                 mvi     m, (video_mem_size-1) & 0FFh
+                 mvi     m, 40h | ((video_mem_size-1) / 256)
+; Начать отображение
+                 mvi     a, 27h
+                 sta     vg75_cmd_reg
+; Команда "установить счетчики"
+                 mvi     a, 0E0h
+                 sta     vg75_cmd_reg
+; Запуск ПДП
+                 mvi     l, vt57_mode & 0FFh
+                 mvi     m, 0A4h
+
+                 lhld    temp_sp         ; Восстанавливаем SP
+                 sphl
+
+                 lda     tape_polarity   ; Учитываем полярность
+                 xra     c               ; и выдаем байт данных
+                 jmp     restore_ret
+
+; Т    айм-аут: на входе нет сигнала (уровень не меняется)
+input_timeout:                           ; FC34
+                 lhld    temp_sp
+                 sphl                    ; Восстанавливаем SP
+                 call    entry_video     ; Восстанавливаем видео
+                 mov     a, d
+                 ora     a               ; Ожидали синхробайт?
+                 jp      print_error     ; Нет -> ошибка
+                 call    check_press_f4  ; Проверяем [F4]
+                 jmp     seek_change     ; Продолжаем искать сигнал
+
+;============================================================================
+; Вывод байта из C на магнитофон.
+; Информация выводится последовательно, начиная со старшего бита,
+; на выход C0 D20. Параллельно выводится на C1-C3 (к C3 подключен
+; светодиод РУС/ЛАТ, он мигает при записи).
+;============================================================================
+entry_outb:                              ; FC46
+                 push    h
+                 push    b
+                 push    d
+                 push    psw
+                 mvi     a, 80h
+                 sta     vt57_mode       ; Останавливаем видео
+
+; SP используется для регенерации ОЗУ
+                 lxi     h, 0
+                 dad     sp              ; Сохраняем SP в HL
+                 lxi     sp, 0
+                 mvi     d, 8            ; Счетчик бит
+
+; Вывод первого (инвертированного) полупериода бита
+out_next_bit:                            ; FC58
+                 pop     psw             ; Регенерация ОЗУ
+                 mov     a, c
+                 rlc                     ; Очередной бит в d0
+                 mov     c, a
+                 mvi     a, 1
+                 xra     c               ; Инвертируем бит
+                 sta     vv55_port_c
+                 lda     tape_write_const
+                 mov     b, a
+
+; Цикл задержки инвертированного полупериода
+; Один проход: POP(10) + DCR(5) + JNZ(10) = 25 тактов
+; При const_write=1Dh(29): задержка = 29*14мкс = 406мкс ~ 0.4мс
+; Полный период ~ 0.8мс, частота ~ 1.2кГц
+
+; Задержка на один проход цикла 10+5+10=25 тактов, что при тактовой частоте 
+; РК 16МГц составляет: Ft=16/9=1.7777МГц 
+; Tt=1/1.7777=0.56мкс T=25*0.56мкс=14мкс
+; Для стандартной константы записи const_write=1Dh=29 общая задержка составляет 
+; Tr=29*14мкс=406мкс или ~0.4мс
+
+; Эта задержка составляет половину периода вывода бита, значит период ~=0.8мкс
+; Частота колебаний при выводе однородных бит (00000... или 11111...) составляет 1.2кГц
+; При выводе чередующихся бит (0101010101....) частота в 2 раз ниже ~600Гц.
+; При выводе случайной последовательности бит выдается шумоподобный сигнал,
+; при этом спектр распределяется между этими двумя частотами.
+
+out_bit_loop1:                           ; FC66
+                 pop     psw             ; Регенерация ОЗУ
+                 dcr     b
+                 jnz     out_bit_loop1
+
+; Вывод второго (прямого) полупериода бита
+                 mvi     a, 0
+                 xra     c               ; Прямой бит
+                 sta     vv55_port_c
+                 dcr     d               ; Счетчик бит--
+                 lda     tape_write_const
+                 jnz     not_last_bit    ; Не последний бит -> полная задержка
+                 sui     0Eh             ; Последний бит -> укороченная
+
+not_last_bit:                            ; FC7A
+                 mov     b, a
+
+; Цикл задержки прямого полупериода
+out_bite_loop2:                          ; FC7B
+                 pop     psw             ; Регенерация ОЗУ
+                 dcr     b
+                 jnz     out_bite_loop2
+
+                 inr     d               ; Проверка на последний бит
+                 dcr     d
+                 jnz     out_next_bit
+
+; Восстанавливаем SP и видео
+                 sphl
+                 lxi     h, vt57_ch2_addr                     ; E004h
+                 mvi     m, video_memory & 0FFh               ; 0D0h
+                 mvi     m, video_memory / 256                ; 76h
+                 inx     h
+                 mvi     m, (video_mem_size-1) & 0FFh         ; 23h
+                 mvi     m, 40h | ((video_mem_size-1) / 256)  ; 49h
+                 mvi     a, 27h
+                 sta     vg75_cmd_reg          ; 0C001h
+                 mvi     a, 0E0h
+                 sta     vg75_cmd_reg          ; 0C001h
+                 mvi     l, vt57_mode & 0FFh   ; 8
+                 mvi     m, 0A4h
+                 pop     psw
+
+; Общий выход с восстановлением регистров
+restore_ret:                                   ; FCA1
+                 pop     d
+                 pop     b
+                 pop     h
+                 ret
+
+;============================================================================
+; Вывод байта из A на экран в шестнадцатеричной форме
+;============================================================================
+entry_hexb:                              ; FCA5
+                 push    psw
+                 rrc                     ; Старшая тетрада
+                 rrc
+                 rrc
+                 rrc
+                 call    hexb_nibble
+                 pop     psw
+
+; Вывод тетрады (младшей) как hex-цифры
+hexb_nibble:                             ; FCAE
+                 ani     0Fh
+                 cpi     0Ah
+                 jm      hexb_make_char
+                 adi     7               ; Коррекция для A-F
+
+hexb_make_char:                          ; FCB7
+                 adi     30h             ; Преобразуем в ASCII-символ
+
+; Вывод символа из A (перенос в C и вызов entry_putc)
+putc_from_a:                             ; FCB9
+                 mov     c, a
+
+;============================================================================
+; Вывод символа на экран из регистра C.
+; Обрабатывает управляющие коды, АР2-последовательности и печатные символы.
+; Клавиша [РУС/ЛАТ] приостанавливает вывод, [F4] прерывает.
+;============================================================================
+entry_putc:                              ; FCBA
+                 push    psw
+                 push    b
+                 push    d
+                 push    h
+                 call    entry_kbhit     ; Проверка на приостановку/прерывание
+
+; Адрес сохранения курсора в стеке (выполняется при любом выходе)
+                 lxi     h, set_cursor_and_exit
+                 push    h
+
+                 lhld    cursor_xy
+                 xchg                    ; DE = координаты курсора
+                 lhld    cursor_addr     ; HL = адрес в видео ОЗУ
+                 lda     ap2_seq
+                 dcr     a
+                 jm      ap2_not_found   ; АР2 не используется (= 0)
+                 jz      ap2_byte_1      ; 1-й байт АР2 ("Y")
+                 jpo     ap2_byte_2      ; 2-й байт АР2 (смещение по Y)
+
+;----------------------------------------------------------------------------
+; Обработка 3-го байта АР2-последовательности (смещение по X + 20h)
+;----------------------------------------------------------------------------
+                 mov     a, c
+                 sui     20h             ; Действительное смещение по X
+                 mov     c, a
+
+ap2_move_x_loop:                         ; FCDD
+                 dcr     c
+                 jm      reset_ap2_seq   ; Все -> сброс АР2
+                 push    b
+                 call    move_right
+                 pop     b
+                 jmp     ap2_move_x_loop
+
+; Сброс АР2-последовательности
+reset_ap2_seq:                           ; FCE9
+                 xra     a
+
+update_ap2_and_exit:                     ; FCEA
+                 sta     ap2_seq
+                 ret
+
+;----------------------------------------------------------------------------
+; АР2 не используется - проверяем управляющие символы
+;----------------------------------------------------------------------------
+ap2_not_found:                           ; FCEE
+                 mov     a, c
+                 ani     7Fh             ; Сбрасываем старший бит
+                 mov     c, a
+                 cpi     1Fh             ; СТР - очистка экрана
+                 jz      clear_screen
+                 cpi     0Ch             ; Курсор в начало экрана
+                 jz      cursor_home
+                 cpi     0Dh             ; ВК - возврат каретки
+                 jz      carrage_return
+                 cpi     0Ah             ; ПС - перевод строки
+                 jz      new_line
+                 cpi     8               ; Стрелка влево
+                 jz      move_left
+                 cpi     18h             ; Стрелка вправо
+                 jz      move_right
+                 cpi     19h             ; Стрелка вверх
+                 jz      move_up
+                 cpi     1Ah             ; Стрелка вниз
+                 jz      move_down
+                 cpi     1Bh             ; АР2
+                 jz      ap2_seq_start
+                 cpi     7               ; Звуковой сигнал
+                 jnz     print_char      ; Нет -> печатный символ
+
+; Звуковой сигнал (B = высота тона, C = длительность)
+                 lxi     b, beep
+
+;----------------------------------------------------------------------------
+; Подпрограмма звукового сигнала.
+;   B - задержка периода (высота тона)
+;   C - количество периодов (длительность)
+; Звук формируется сменой уровня на выходе INTE процессора
+; командами EI (высокий) и DI (низкий).
+;   Формулы: b = 47/f(кГц), c = t(мс)/(b*0.021)
+;   Диапазон частот: 184Гц - 47кГц
+;----------------------------------------------------------------------------
+sound:                                   ; FD27
+                 mov     a, b
+sound_on_loop:                           ; FD28
+                 ei                      ; Верхний полупериод
+                 dcr     a
+                 jnz     sound_on_loop
+
+                 mov     a, b
+sound_off_loop:                          ; FD2E
+                 di                      ; Нижний полупериод
+                 dcr     a
+                 jnz     sound_off_loop
+                 dcr     c
+                 jnz     sound
+                 ret
+
+;----------------------------------------------------------------------------
+; Печать символа на экран и перемещение курсора
+;----------------------------------------------------------------------------
+print_char:                              ; FD38
+                 mov     m, c            ; Выводим символ в видео ОЗУ
+                 call    move_right      ; Перемещаем курсор вправо
+; Если курсор вернулся в начало экрана -> скроллинг
+                 mov     a, d
+                 cpi     3               ; Верхняя строка?
+                 rnz
+                 mov     a, e
+                 cpi     8               ; Первая позиция?
+                 rnz
+                 call    move_up         ; Переходим на нижнюю строку
+
+;----------------------------------------------------------------------------
+; Перевод строки (ПС).
+; Если курсор в нижней строке -> скроллинг экрана вверх на 1 строку.
+;----------------------------------------------------------------------------
+new_line:                                  ; FD47
+                 mov     a, d
+                 cpi     1Bh             ; 3+25-1 = самая нижняя строка
+                 jnz     move_down       ; Нет -> просто вниз
+                 push    h
+                 push    d
+
+; Смещение экрана на 1 строку вверх
+                 lxi     h, video_memory+(78*3)+8   ; Начало 1-й видимой строки
+                 lxi     d, video_memory+(78*4)+8   ; Начало 2-й видимой строки
+                 lxi     b, 25*78                   ; 25 строк по 78 символов
+
+scroll_loop:                             ; FD58
+                 ldax    d
+                 mov     m, a
+                 inx     h
+                 inx     d
+                 dcx     b
+                 mov     a, c
+                 ora     b
+                 jnz     scroll_loop
+
+                 pop     d
+                 pop     h
+                 ret
+
+;----------------------------------------------------------------------------
+; Обработка 1-го байта АР2-последовательности (должен быть "Y")
+;----------------------------------------------------------------------------
+ap2_byte_1:                                   ; FD65
+                 mov     a, c
+                 cpi     'Y'
+                 jnz     reset_ap2_seq        ; Не "Y" -> сброс АР2
+                 call    cursor_home
+                 mvi     a, 2            ; Ожидаем 2-й байт
+                 jmp     update_ap2_and_exit
+
+;----------------------------------------------------------------------------
+; Обработка 2-го байта АР2-последовательности (смещение по Y + 20h)
+;----------------------------------------------------------------------------
+ap2_byte_2:                                  ; FD73
+                 mov     a, c
+                 sui     20h             ; Действительное смещение по Y
+                 mov     c, a
+
+ap2_move_y_loop:                         ; FD77
+                 dcr     c
+                 mvi     a, 4                ; Признак для следующего этапа
+                 jm      update_ap2_and_exit ; Все -> ожидаем 3-й байт (X)
+                 push    b
+                 call    move_down
+                 pop     b
+                 jmp     ap2_move_y_loop
+
+;----------------------------------------------------------------------------
+; Сохранение параметров курсора и выход из entry_putc
+;----------------------------------------------------------------------------
+set_cursor_and_exit:                        ; FD85
+                 shld    cursor_addr
+                 xchg
+                 shld    cursor_xy
+; Передаем координаты курсора контроллеру ВГ75
+                 mvi     a, 80h          ; Команда "установить курсор"
+                 sta     vg75_cmd_reg
+                 mov     a, l            ; Координата X
+                 sta     vg75_params
+                 mov     a, h            ; Координата Y
+                 sta     vg75_params
+                 pop     h
+                 pop     d
+                 pop     b
+                 pop     psw
+                 ret
+
+;----------------------------------------------------------------------------
+; Начало АР2-последовательности
+; Был прочитан код символа АР2, необходимо прочитать АР2 последовательность.
+; Реализована только одна АР2 последовательность:
+; Установка курсора в заданные координаты АР2+'Y'+(x+20h)+(y+20h):
+;   где  x - номер позиции в строке (0 - 63),
+;        y - номер строки (0 - 24).
+; Отсчет начинается с верхнего левого угла экрана.
+;----------------------------------------------------------------------------
+ap2_seq_start:                             ; FD9E
+                 mvi     a, 1              ; Ожидаем 1-й байт
+                 jmp     update_ap2_and_exit
+
+;----------------------------------------------------------------------------
+; Инициализация дисплея (СТР).
+; Обработка управляющего символа инициализации дисплея СТР.
+; Очистка видео ОЗУ и установка курсора в начало.
+; Выполняются следующие действия:
+;   - вся экранная область ОЗУ (2342 байта) обнуляется,
+;   - курсор устанавливается в нулевую позицию.
+;  Очистка начинается с конечного адреса видео ОЗУ, с нижнего правого угла экрана.
+;----------------------------------------------------------------------------
+clear_screen:                                ; FDA3
+                 lxi     h, video_memory_end
+                 lxi     d, video_mem_size+1
+
+clear_screen_loop:                           ; FDA9
+                 xra     a
+                 mov     m, a
+                 dcx     h
+                 dcx     d
+                 mov     a, e
+                 ora     d
+                 jnz     clear_screen_loop
+
+;----------------------------------------------------------------------------
+; Установка курсора в начальную позицию (верхний левый угол).
+; Реально: позиция X=8, Y=3 (с учетом служебных строк и отступа).
+;----------------------------------------------------------------------------
+cursor_home:                           ; FDB2
+                 lxi     d, 308h
+                 lxi     h, video_memory+(78*3)+8
+                 ret
+
+;----------------------------------------------------------------------------
+; Перемещение курсора вправо на одну позицию
+;----------------------------------------------------------------------------
+move_right:                           ; FDB9
+                 mov     a, e
+                 inx     h               ; Адрес в видео ОЗУ += 1
+                 inr     e               ; Позиция X += 1
+                 cpi     8+64-1          ; Правая граница? (71)
+                 rnz
+                 mvi     e, 8            ; Переход на левый край
+                 lxi     b, -64          ; Отмотка адреса
+                 dad     b
+
+;----------------------------------------------------------------------------
+; Перемещение курсора вниз на одну строку
+;----------------------------------------------------------------------------
+move_down:                               ; FDC5
+                 mov     a, d
+                 cpi     1Bh             ; 3+25-1 = нижняя строка
+                 lxi     b, 78           ; Смещение: +1 строка
+                 jnz     move_down_skip
+                 mvi     d, 2            ; Переход на верхнюю строку (будет 3)
+                 lxi     b, -24*78       ; Смещение наверх
+
+move_down_skip:                          ; FDD3
+                 inr     d
+                 dad     b
+                 ret
+
+;----------------------------------------------------------------------------
+; Перемещение курсора влево на одну позицию
+;----------------------------------------------------------------------------
+move_left:                               ; FDD6
+                 mov     a, e
+                 dcx     h
+                 dcr     e
+                 cpi     8               ; Левая граница?
+                 rnz
+                 mvi     e, 8+64-1       ; Переход на правый край (71)
+                 lxi     b, 64
+                 dad     b
+
+;----------------------------------------------------------------------------
+; Перемещение курсора вверх на одну строку
+;----------------------------------------------------------------------------
+move_up:                                 ; FDE2
+                 mov     a, d
+                 cpi     3               ; Верхняя строка?
+                 lxi     b, -78          ; Смещение: -1 строка
+                 jnz     move_up_skip
+                 mvi     d, 1Bh+1        ; Переход на нижнюю строку (будет 1Bh)
+                 lxi     b, 24*78        ; Смещение вниз
+
+move_up_skip:                            ; FDF0
+                 dcr     d
+                 dad     b
+                 ret
+
+;----------------------------------------------------------------------------
+; Возврат каретки (ВК). Курсор в начало текущей строки.
+;----------------------------------------------------------------------------
+carrage_return:                                  ; FDF3
+                 mov     a, l
+                 sub     e               ; Вычитаем позицию в строке
+                 jnc     carrage_return_borrow
+                 dcr     h               ; Заем из старшего байта
+
+carrage_return_borrow:                   ; FDF9
+                 mov     l, a
+                 mvi     e, 8            ; Первая позиция
+                 lxi     b, 8
+                 dad     b
+                 ret
+
+;============================================================================
+; Опрос состояния клавиатуры.
+;   Выход: A = FFh - клавиша нажата, A = 0 - не нажата.
+; Реализует автоповтор и устранение дребезга контактов.
+;   Счетчик обращений:
+;     21          - устранение дребезга
+;     21+224      - начальная задержка автоповтора
+;     21+224+64*N - стандартный период автоповтора
+; Стандартная задержка между обращениями к подпрограмме составляет 31 такт. 
+;============================================================================
+entry_kbhit:                             ; FE01
+; Проверка на нажатие [РУС/ЛАТ]
+                 lda     vv55_port_c
+                 ani     80h
+                 jz      ruslat_not_pressed  ; Отпущена -> продолжаем
+                 lda     pressed_key         ; Если нажата и ранее была нажата
+                 ora     a                   ; другая клавиша,
+                 rnz                         ; то выходим
+
+ruslat_not_pressed:                          ; FE0E
+                 push    h
+                 lhld    keyboard_repeat  ; Параметры автоповтора (L=код, H=счетчик)
+                 call    entry_scan_kbd   ; Получить код клавиши
+                                          ;   FFh - не нажата
+                                          ;   FEh - [РУС/ЛАТ]
+                                          ;   xx  - код символа
+                 cmp     l                ; Та же клавиша?
+                 mov     l, a
+                 jz      keyboard_retention        ; Да -> удержание
+
+; Клавиша отпущена или нажата другая
+release_ruslat:                          ; FE1A
+                 mvi     a, 1
+                 sta     released        ; Признак отпускания
+                 mvi     h, bounce       ; Задержка дребезга (21)
+
+not_pr_exit:                             ; FE21
+                 xra     a               ; Клавиша не нажата
+
+entry_kbhit_exit:                        ; FE22
+                 shld    keyboard_repeat
+                 pop     h
+                 sta     pressed_key
+                 ret
+
+;----------------------------------------------------------------------------
+; Обработка удержания клавиши
+;----------------------------------------------------------------------------
+keyboard_retention:                        ; FE2A
+                 dcr     h                 ; Счетчик задержки--
+                 jnz     not_pr_exit       ; Время не вышло -> не нажата
+                 inr     a                 ; A = FFh?
+                 jz      entry_kbhit_exit  ; Клавиша не нажата -> выход
+                 inr     a                 ; A = FEh?
+                 jz      process_ruslat    ; [РУС/ЛАТ] -> обработать
+
+; Нажата клавиша
+                 push    b
+                 lxi     b, kb_click     ; Щелчок нажатия
+                 call    sound
+                 pop     b
+
+                 lda     released
+                 mvi     h, first_kb_delay ; Начальная задержка (224)
+                 dcr     a
+                 sta     released
+                 jz      keyboard_first_press       ; Первое нажатие -> начальная задержка
+                 mvi     h, regular_kb_delay ; Автоповтор -> стандартная (64)
+
+keyboard_first_press:                               ; FE4C
+                 mvi     a, 0FFh         ; Признак: клавиша нажата
+                 jmp     entry_kbhit_exit
+
+;----------------------------------------------------------------------------
+; Обработка клавиши [РУС/ЛАТ]
+; Бесконечный цикл ожидания отпускания, затем инверсия флага.
+;----------------------------------------------------------------------------
+process_ruslat:                              ; FE51
+                 lda     vv55_port_c
+                 ani     80h
+                 jz      process_ruslat      ; Ждем отпускания
+
+                 lda     ruslat_flag     ; Инверсия флага РУС/ЛАТ
+                 cma
+                 sta     ruslat_flag
+                 jmp     release_ruslat
+
+;============================================================================
+; Ввод символа с клавиатуры.
+;   Выход: A - введенный символ.
+; Ожидает нажатия клавиши в бесконечном цикле.
+;============================================================================
+entry_getc:                              ; FE63
+                 call    entry_kbhit
+                 ora     a
+                 jz      entry_getc      ; Не нажата -> ждем
+
+                 xra     a
+                 sta     pressed_key     ; Сбрасываем признак нажатия
+                 lda     keyboard_repeat ; Код клавиши
+                 ret
+
+;============================================================================
+; Сканирование матрицы клавиатуры 8x8.
+;   Выход: A = FFh  - не нажата
+;          A = FEh  - [РУС/ЛАТ]
+;          A = код  - код символа
+;============================================================================
+entry_scan_kbd:                          ; FE72
+; Проверка [РУС/ЛАТ]
+                 lda     vv55_port_c
+                 ani     80h
+                 jnz     fast_kbd_contrl
+                 mvi     a, 0FEh         ; Код [РУС/ЛАТ]
+                 ret
+
+; Быстрая проверка: нажата ли хоть одна клавиша?
+fast_kbd_contrl:                         ; FE7D
+                 xra     a
+                 sta     vv55_port_a      ; Все линии сканирования = 0
+                 sta     vv55_port_c      ; Погасить светодиод
+                 lda     ruslat_flag     ; Управление светодиодом РУС/ЛАТ
+                 ani     1
+                 ori     6               ; Команда: зажечь/погасить
+                 sta     vv55_ctrl 
+                 lda     vv55_port_b      ; Читаем состояние матрицы
+                 inr     a               ; Если хоть одна нажата, A != FFh
+                 jnz     key_is_pressed
+                 dcr     a               ; FFh = не нажата
+                 ret
+
+; Сканирование матрицы клавиатуры
+;--------------------------------------------------------------------
+; Таблица скан-кодов клавиатуры РК:
+;  Столбец:   0    1     2     3     4     5     6     7
+;  Клавиша
+;  в столбце:
+;      0:     ↖︎    ТАБ   0     8     Ю     Х     П     Ь
+;      1:    СТР   ПС    1     9     А     И     Я     Ы
+;      2:    AP2   ВК    2     :     Б     Й     Р     З
+;      3:    F1    ЗБ    3     ;     Ц     К     С     Ш
+;      4:    F2    <-    4     ,     Д     Л     Т     Э
+;      5:    F3    ^     5     -     Е     М     У     Щ
+;      6:    F4    ->    6     .     Ф     Н     Ж     Ч
+;      7:    F5    v     7     /     Г     О     В     пробел
+;--------------------------------------------------------------------
+; Для столбцов 0 и 1 скан коды одинаковы потому, что перекодировка
+; происходит табличным способом в отдельных ветках для каждого столбца.
+; В столбцах 2 - 7 к номеру клавиши: 00SSSNNNb, где SSS - номер столбца,
+; NNN - номер клавиши, прибавляется 20h, чтобы упростить декодирование.
+
+key_is_pressed:                            ; FE97
+                 push    h
+                 mvi     l, 1            ; Бегущая единица для сканирования
+                 mvi     h, 8-1          ; Количество столбцов
+
+; Цикл сканирования столбцов
+scan_kbd_loop:                           ; FE9C
+                 mov     a, l
+                 rrc
+                 mov     l, a
+                 cma
+                 sta     vv55_port_a     ; Активируем столбец
+                 lda     vv55_port_b     ; Читаем строки
+                 cma
+                 ora     a
+                 jnz     scan_bounce     ; Есть нажатие -> устранение дребезга
+                 dcr     h
+                 jp      scan_kbd_loop   ; Следующий столбец
+
+; Клавиша не нажата (или дребезг)
+key_not_press:                           ; FEAF
+                 mvi     a, 0FFh
+                 pop     h
+                 ret
+
+; Устранение дребезга: 32 повторных опроса
+scan_bounce:                             ; FEB3
+                 mvi     l, 32
+
+scan_boun_loop:                          ; FEB5
+                 lda     vv55_port_b
+                 cma
+                 ora     a
+                 jz      key_not_press   ; Не подтвердилось -> не нажата
+                 dcr     l
+                 jnz     scan_boun_loop
+
+                 mvi     l, 8            ; Количество клавиш в столбце
+
+; Определение номера клавиши (из позиционного кода в порядковый)
+; Цикл определения номера клавиши в столбце
+; Здесь из позиционного кода, считанного с порта B D20, мы
+; получаем номер клавиши в столбце (начиная со старших номеров).
+num_kbd_loop:                            ; FEC3
+                 dcr     l
+                 rlc
+                 jnc     num_kbd_loop    ; Сдвигаем пока не найдем нажатую
+
+                 mov     a, h            ; H <-> L (H = номер клавиши,
+                 mov     h, l            ; L = номер столбца)
+                 mov     l, a
+
+; Столбцы 0 и 1 - управляющие клавиши (перекодировка по таблице)
+; Колонки 0 и 1 это управляющие символы, используемые в стандартных
+; дисплеях. Для перекодировки используются специальные таблицы.
+                 cpi     1               ; Столбец 1?
+                 jz      make_1_column
+                 jc      make_0_column   ; Столбец 0?
+
+; Остальные клавиши используются для ввода отображаемых символов.
+; Столбцы 2-7: код = столбец*8 + 20h + номер клавиши
+                 rlc
+                 rlc
+                 rlc
+                 adi     20h
+                 ora     h               ; Прибавляем номер клавиши
+                 cpi     5Fh             ; Пробел?
+                 jnz     scan_others
+                 mvi     a, 20h          ; Код пробела
+                 pop     h
+                 ret
+
+;----------------------------------------------------------------------------
+; Таблицы перекодировки управляющих клавиш
+;----------------------------------------------------------------------------
+; Столбец 1 (клавиши 0-7):
+table_column_1:  db 9                    ; FEE2 - ТАБ
+                 db 0Ah                  ; ПС
+                 db 0Dh                  ; ВК
+                 db 7Fh                  ; ЗБ
+                 db 8                    ; Стрелка влево
+                 db 19h                  ; Стрелка вверх
+                 db 18h                  ; Стрелка вправо
+                 db 1Ah                  ; Стрелка вниз
+
+; Столбец 0 (клавиши 0-8):
+table_column_0:  db 0Ch                  ; FEEA - Курсор в начало (↖︎)
+                 db 1Fh                  ; СТР
+                 db 1Bh                  ; АР2
+                 db 0                    ; F1
+                 db 1                    ; F2
+                 db 2                    ; F3
+                 db 3                    ; F4
+                 db 4                    ; F5 (нет на клавиатуре)
+                 db 5                    ; (не используется)
+
+; Перекодировка столбца 0
+make_0_column:                           ; FEF3
+                 mov     a, h
+                 lxi     h, table_column_0
+                 jmp     scan_table
+
+; Перекодировка столбца 1
+make_1_column:                           ; FEFA
+                 mov     a, h
+                 lxi     h, table_column_1
+
+scan_table:                              ; FEFE
+                 add     l               ; Индекс в таблице
+                 mov     l, a
+                 mov     a, m            ; Код из таблицы
+                 cpi     40h             ; Управляющая клавиша?
+                 pop     h
+                 rc                      ; Да -> выход
+
+                 push    h
+
+;----------------------------------------------------------------------------
+; Обработка клавиш с модификаторами [УС], [СС] и режимом РУС/ЛАТ.
+; Скан-код в L, состояние вспомогательных клавиш в H.
+; Здесь происходит выдача кода для всех клавиш, кроме управляющих, [ЗБ] и пробела.
+; Эти клавиши выдают 1 из 2-х символов в зависимости от состояния клавиш [СС], [УС]
+; и режима рус/лат. Скан код клавиши находится в L, состояние клавиш [СС] и [УС] в H.
+;----------------------------------------------------------------------------
+scan_others:                              ; FF06
+                 mov     l, a
+                 lda     vv55_port_c      ; Читаем модификаторы
+                 mov     h, a
+                 ani     40h             ; [УС] нажата?
+                 jnz     rus_or_lat      ; Нет -> проверяем РУС/ЛАТ
+
+; Клавиша [УС]: буквы (40h-5Fh) -> управляющие коды (00h-1Fh)
+; Обслуживание модификационной клавиши [УС].
+; Она работает только с буквенными клавишами с кодом 40h - 5Fh.
+; Если нажата одна из этих клавиш в сочетании с [УС], то
+; выдается код на 30h меньше, т.е. 00h-1Fh (управляющие коды)
+; Признак рус/лат на управляющие коды не влияет.
+                 mov     a, l
+                 cpi     40h
+                 jm      not_press_us_ss  ; Не буква -> пропускаем
+                 ani     1Fh             ; Обнуляем старшие биты
+                 pop     h
+                 ret
+
+; Режим РУС/ЛАТ: буквы переводятся в русский регистр (+20h)
+; Выдача кода в зависимости от состояния рус/лат
+; Действует только на буквенные клавиши со кодом  40h - 5Fh.
+; Если признак рус/лат в состоянии лат (=0), то скан код = код.
+; Если рус/лат = рус (=0FFh), то код больше от скан кода на 20h.
+rus_or_lat:                              ; FF1A
+                 lda     ruslat_flag
+                 ora     a
+                 jz      scan_ss         ; ЛАТ -> без изменений
+                 mov     a, l
+                 cpi     40h
+                 jm      scan_ss         ; Не буква -> без изменений
+                 ori     20h             ; Перевод в русский регистр
+                 mov     l, a
+
+; Клавиша [СС]: буквы меняют раскладку, символы - верхний/нижний регистр
+; Обслуживание модификационной клавиши [СС].
+; Действие клавиши зависит от назначения (кода) клавиши.
+; Буквенные клавиши меняют раскладку рус <-> лат
+; Символьные и цифровые клавиши выдают один из 2-х символов
+; которые она обозначает.
+scan_ss:                                  ; FF2A
+                 mov     a, h
+                 ani     20h              ; [СС] нажата?
+                 jnz     not_press_us_ss  ; Нет -> выход
+                 mov     a, l
+                 cpi     40h
+                 jm      not_pressed_ss   ; Символ/цифра
+                 mov     a, l
+                 xri     20h              ; Буква: лат <-> рус
+                 pop     h
+                 ret
+
+; Если модификационные клавиши УС и СС не нажаты
+not_pressed_ss:                           ; FF3B
+                 mov     a, l             ; Цифры/символы: сбрасываем бит
+                 ani     2Fh
+                 mov     l, a
+
+; Модификаторы не нажаты
+not_press_us_ss:                          ; FF3F
+                 mov     a, l
+                 cpi     40h              ; Буква?
+                 pop     h
+                 rp                       ; Да -> выход
+
+; Если модификационные клавиши УС и СС не нажаты
+; Обработка цифровых и символьных клавиш.
+                 push    h               
+                 mov     l, a            ; сохранить код в L
+                 ani     0Fh             ; сбрасываем ненужные биты
+                 cpi     0Ch             ; для клавиш с кодом
+                 mov     a, l            ; 20h - 2Ch и 30h - 3Ch 
+                 jm      not_high        ; меняются местами
+                 xri     10h             
+
+not_high:                                ; FF50
+                 pop     h
+                 ret
+
+;============================================================================
+; Определение верхней границы свободной памяти.
+; Используется для программ с большими буферами (например, текстовых).
+; Если в ОЗУ необходимо разместить какую либо программу (резидентную или
+; драйвер), ее размещают в верхней области (ниже служебной области Монитора),
+; а границу верхней свободной памяти устанавливают на байт ниже.
+; Это предотвратит затирание кода программы растущим буфером.
+;============================================================================
+entry_getlim:                            ; FF52
+                 lhld    memory_limit
+                 ret
+
+;----------------------------------------------------------------------------
+; Установка верхней границы свободной памяти
+;----------------------------------------------------------------------------
+entry_setlim:                            ; FF56
+                 shld    memory_limit
+                 ret
+
+;============================================================================
+; Строковые константы (завершаются нулевым байтом)
+;============================================================================
+
+; Начальное сообщение при включении
+radio_prompt:    db 1Fh, "radio-86rk", 0  ; FF5A
+
+; Промт: готовность к вводу команды
+prompt:          dw 0A0Dh                 ; FF66
+                 db "-->", 0
+
+; Отступ для вывода адреса с новой строки (ВК, ПС, 4x стрелка вправо)
+next_line_prefix: dw 0A0Dh                 ; FF6C
+                 db 18h, 18h, 18h, 18h, 0
+
+; Имена регистров для команды X (с возвратом курсора на 6 строк вверх)
+registers:       dw 0A0Dh                 ; FF73
+                 db " PC-"
+                 dw 0A0Dh
+                 db " HL-"
+                 dw 0A0Dh
+                 db " BC-"
+                 dw 0A0Dh
+                 db " DE-"
+                 dw 0A0Dh
+                 db " SP-"
+                 dw 0A0Dh
+                 db " AF-"
+                 db 19h, 19h, 19h, 19h, 19h, 19h, 0
+
+; Затирание предыдущего символа (backspace, пробел, backspace)
+back_clear:      db 8, 20h, 8, 0          ; FF9E
+
+;============================================================================
+; Адрес возврата из отлаживаемой программы.
+; Выполняется при срабатывании RST 6, установленной командой G.
+; Сохраняет регистры в служебных ячейках (доступны по команде X)
+; и выводит на экран адрес останова.
+; Содержимое регистров сохраняется в служебных ячейках Монитора.
+; В последствии его можно просмотреть командой X Монитора.
+; На экран выдается адрес останова. И управление передается на
+; "горячий" старт Монитора (prompt_loop). 
+;============================================================================
+return_address:                          ; FFA2
+                 shld    hl_storage
+                 push    psw
+                 pop     h
+                 shld    af_storage
+
+; Реальный адрес останова (из стека, на 1 больше из-за RST 6)
+; Возвращаем из стека реальный адрес останова, он может отличаться от
+; указанного в команде G. Он сохраняется в стеке, поскольку мы
+; используем команду RST 6, и больше на 1.					
+                 pop     h
+                 dcx     h
+                 shld    pc_storage
+
+; Сохраняем остальные регистры через SP
+; Через HL получаем значение указателя стека и используя последний
+; сохраняем значения всех остальных регистров					
+                 lxi     h, 0
+                 dad     sp
+                 lxi     sp, sp_storage+2
+                 push    h               ; SP
+                 push    d               ; DE
+                 push    b               ; BC
+
+                 lhld    pc_storage
+                 lxi     sp, stack_bottom
+                 call    print_addr_from_hl ; Выводим адрес останова
+
+; Проверяем: совпадает ли реальный адрес с заданным в команде G?
+; Если они равны, восстанавливаем значение байта по этому адресу,
+; сохраненное ранее командой G.					
+                 xchg
+                 lhld    stop_addr
+                 call    cmp_hl_de
+                 jnz     prompt_loop     ; Не совпадает -> промт
+
+; Восстанавливаем байт по адресу останова
+                 lda     stop_addr_value
+                 mov     m, a
+                 jmp     prompt_loop
+
+;============================================================================
+; Команда X. Просмотр и изменение регистров процессора.
+; Выводит содержимое регистровых пар (PC, HL, BC, DE, SP, AF)
+; из служебных ячеек с возможностью изменения.
+;============================================================================
+print_regs:                              ; FFD3
+                 lxi     h, registers
+                 call    entry_puts
+                 lxi     h, pc_storage
+                 mvi     b, 6            ; 6 регистровых пар
+
+print_regs_loop:                         ; FFDE
+                 mov     e, m            ; Содержимое
+                 inx     h               ; регистровой пары
+                 mov     d, m            ; в DE
+                 push    b
+                 push    h
+                 xchg
+                 call    print_addr_from_hl ; Выводим значение
+                 call    input_string       ; Ввод нового значения
+                 jnc     regs_not_changed   ; Ничего не введено
+
+                 call    parse_hex          ; Новое значение в HL
+                 pop     d
+                 push    d
+                 xchg
+                 mov     m, d               ; Сохраняем
+                 dcx     h
+                 mov     m, e
+
+regs_not_changed:                           ; FFF6
+                 pop     h
+                 pop     b
+                 dcr     b
+                 inx     h
+                 jnz     print_regs_loop
+                 ret
+
+;----------------------------------------------------------------------------
+; Неиспользуемые 2 байта в конце ПЗУ.
+; В журнале "Радио" №8 1986г.: FFFFh
+; В книге "Домашний компьютер" МРБ: 89BBh
+;----------------------------------------------------------------------------
+                 dw 0FFFFh
+
+                 end
