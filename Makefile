@@ -10,7 +10,7 @@ listing:
 
 test:
 	xxd original/mon32.bin >mon32.bin.hex
-	xxd F800-FFFF.bin >monitor.bin.hex
+	xxd monitor.bin >monitor.bin.hex
 	diff mon32.bin.hex monitor.bin.hex
 
 docs: listing
