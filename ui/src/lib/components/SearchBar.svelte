@@ -44,6 +44,20 @@
     spellcheck="false"
   />
   <span class="count">{countLabel}</span>
+  <div class="nav" role="group" aria-label="Навигация по совпадениям">
+    <button
+      onclick={onPrev}
+      disabled={matchCount === 0}
+      title="Предыдущее совпадение (Shift+Enter)"
+      aria-label="Предыдущее совпадение"
+    >↑</button>
+    <button
+      onclick={onNext}
+      disabled={matchCount === 0}
+      title="Следующее совпадение (Enter)"
+      aria-label="Следующее совпадение"
+    >↓</button>
+  </div>
   <div class="toggle" role="group" aria-label="Режим поиска">
     <button
       class:active={mode === 'highlight'}
@@ -121,6 +135,27 @@
     color: var(--accent-fg);
   }
   .toggle button:not(.active):hover { background: var(--bg-hover); color: var(--fg); }
+  .nav {
+    display: flex;
+    border: 1px solid var(--border-soft);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .nav button {
+    background: var(--bg);
+    color: var(--fg);
+    border: none;
+    padding: 4px 8px;
+    font: inherit;
+    cursor: pointer;
+    min-width: 28px;
+  }
+  .nav button:hover:not(:disabled) { background: var(--bg-hover); }
+  .nav button:disabled {
+    color: var(--fg-dim);
+    cursor: default;
+    opacity: 0.5;
+  }
   .theme {
     background: var(--bg);
     color: var(--fg);
