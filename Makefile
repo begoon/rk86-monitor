@@ -1,4 +1,4 @@
-ASM := bunx --bun asm8080@latest
+ASM := npx --yes asm8080
 
 all: build test
 
